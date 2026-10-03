@@ -284,7 +284,7 @@ def build_embeds(projects, state, now):
             except Exception:
                 pass
 
-        prefix = "🆕 **NEW** • " if is_new else ""
+        prefix = "🆕 " if is_new else ""
         kind = class_label(mod)
         latest = latest_file(mod)
 
