@@ -345,6 +345,24 @@ def main():
         state["author_id"] = author_id
         state["author_name"] = author_name
 
+    # Merge auto-discovered projects with every explicitly configured project.
+    # This keeps projects visible even when CurseForge's primary-author search
+    # does not return them yet (for example a newly created project with no files).
+    by_id = {str(p.get("id")): p for p in projects if p.get("id") is not None}
+    for configured_project in configured:
+        mod_id = str(configured_project.get("mod_id", ""))
+        if not mod_id.isdigit() or mod_id in by_id:
+            continue
+        try:
+            mod = get_mod(mod_id)
+            if mod:
+                by_id[mod_id] = mod
+                print(f"[INFO] Added configured project missing from author search: {mod.get('name')} ({mod_id})")
+        except Exception as e:
+            print(f"[WARN] Could not load configured project {mod_id}: {e}")
+
+    projects = list(by_id.values())
+
     current_ids = {str(p.get("id")) for p in projects}
     initialized = bool(state.get("initialized"))
 
