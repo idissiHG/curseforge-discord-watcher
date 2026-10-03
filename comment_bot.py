@@ -843,8 +843,8 @@ def fetch_project_overview_data():
             print(f"[WARN] Overview fetch failed for {project.get('name')} ({project.get('id')}): {exc}")
     return list(by_id.values())
 
-def build_project_overview_embed(projects, previous_downloads=None):
-    previous_downloads = previous_downloads or {}
+def build_project_overview_embed(projects, download_deltas_24h=None):
+    download_deltas_24h = download_deltas_24h or {}
     modpacks = []
     mods = []
     others = []
@@ -866,9 +866,8 @@ def build_project_overview_embed(projects, previous_downloads=None):
         url = ((mod.get("links") or {}).get("websiteUrl") or "https://www.curseforge.com/")
         downloads = int(mod.get("downloadCount") or 0)
         total_downloads += downloads
-        previous = previous_downloads.get(str(mid))
-        delta = downloads - int(previous) if previous is not None else 0
-        delta_text = f" **(+{delta})**" if delta > 0 else ""
+        delta = int(download_deltas_24h.get(str(mid), 0) or 0)
+        delta_text = f" **(+{delta} / 24h)**" if delta > 0 else ""
         kind = cf_project_class(mod)
         latest = cf_latest_file(mod)
 
@@ -935,19 +934,53 @@ async def update_project_overview_once():
     if not PROJECTS_CHANNEL_ID:
         return
     projects = await asyncio.to_thread(fetch_project_overview_data)
-    try:
-        previous_downloads = json.loads(get_meta("projects_download_counts") or "{}")
-        if not isinstance(previous_downloads, dict):
-            previous_downloads = {}
-    except Exception:
-        previous_downloads = {}
 
-    embed = build_project_overview_embed(projects, previous_downloads)
+    now_ts = int(time.time())
+    try:
+        download_history = json.loads(get_meta("projects_download_history") or "{}")
+        if not isinstance(download_history, dict):
+            download_history = {}
+    except Exception:
+        download_history = {}
+
     current_downloads = {
         str(int(mod.get("id") or 0)): int(mod.get("downloadCount") or 0)
         for mod in projects
         if mod.get("id") is not None
     }
+
+    deltas_24h = {}
+    cutoff_24h = now_ts - 24 * 60 * 60
+    cutoff_keep = now_ts - 48 * 60 * 60
+
+    for project_id, current_count in current_downloads.items():
+        raw_points = download_history.get(project_id) or []
+        points = []
+        for point in raw_points:
+            try:
+                ts = int(point.get("ts"))
+                count = int(point.get("count"))
+                if ts >= cutoff_keep:
+                    points.append({"ts": ts, "count": count})
+            except Exception:
+                continue
+
+        points.sort(key=lambda p: p["ts"])
+
+        baseline = None
+        for point in points:
+            if point["ts"] <= cutoff_24h:
+                baseline = point
+
+        if baseline is not None:
+            delta = current_count - baseline["count"]
+            if delta > 0:
+                deltas_24h[project_id] = delta
+
+        points.append({"ts": now_ts, "count": current_count})
+        download_history[project_id] = points
+
+    embed = build_project_overview_embed(projects, deltas_24h)
     channel = bot.get_channel(PROJECTS_CHANNEL_ID) or await bot.fetch_channel(PROJECTS_CHANNEL_ID)
 
     message_id = get_meta("projects_overview_message_id")
@@ -955,7 +988,7 @@ async def update_project_overview_once():
         try:
             msg = await channel.fetch_message(int(message_id))
             await msg.edit(embed=embed)
-            set_meta("projects_download_counts", json.dumps(current_downloads))
+            set_meta("projects_download_history", json.dumps(download_history))
             print(f"[OK] Updated project overview message {message_id}.")
             return
         except discord.NotFound:
@@ -965,7 +998,7 @@ async def update_project_overview_once():
 
     msg = await channel.send(embed=embed)
     set_meta("projects_overview_message_id", msg.id)
-    set_meta("projects_download_counts", json.dumps(current_downloads))
+    set_meta("projects_download_history", json.dumps(download_history))
     print(f"[OK] Created project overview message {msg.id}.")
 
 @tasks.loop(seconds=PROJECTS_REFRESH_SECONDS)
