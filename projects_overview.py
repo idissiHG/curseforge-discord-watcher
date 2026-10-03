@@ -169,7 +169,7 @@ def file_version_label(file_info):
         return ""
     return file_info.get("displayName") or file_info.get("fileName") or ""
 
-def modpack_manifest_info(mod_id, file_info):
+def modpack_manifest_info(mod_id, file_info, project_url=""):
     if not file_info:
         return {"mod_count": None, "loader": "", "loader_version": ""}
 
@@ -181,13 +181,20 @@ def modpack_manifest_info(mod_id, file_info):
             print(f"[WARN] Could not fetch detailed file info for {mod_id}: {e}")
 
     download_url = detailed.get("downloadUrl")
+    if not download_url and project_url and detailed.get("id"):
+        download_url = project_url.rstrip("/") + f"/download/{detailed['id']}/file"
+        print(f"[INFO] Using CurseForge public download fallback for {mod_id}: file {detailed['id']}")
+
     if not download_url:
         return {"mod_count": None, "loader": "", "loader_version": ""}
 
     try:
         req = Request(
             download_url,
-            headers={"User-Agent": "curseforge-project-overview/1.0"}
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; CurseForgeProjectOverview/1.0)",
+                "Accept": "*/*"
+            }
         )
         with urlopen(req, timeout=60) as res:
             data = res.read()
@@ -273,7 +280,7 @@ def build_embeds(projects, state, now):
             if mc_versions:
                 info_parts.append("Minecraft " + ", ".join(mc_versions))
             if kind == "MODPACK":
-                pack_info = modpack_manifest_info(mid, latest)
+                pack_info = modpack_manifest_info(mid, latest, url)
                 if pack_info.get("loader"):
                     loader = pack_info["loader"]
                 if loader:
