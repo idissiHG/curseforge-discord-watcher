@@ -1,0 +1,11 @@
+{
+  "discord_username": "CurseForge Updates",
+  "discord_avatar_url": "",
+  "projects": [
+    {
+      "name": "My Mod",
+      "mod_id": 123456,
+      "embed_color": "F16436"
+    }
+  ]
+}
