@@ -588,6 +588,21 @@ async def poll_curseforge_comments_once():
         print(f"[NEW] Posted {found} new CurseForge comment(s) to Discord.")
 
 
+
+async def active_discord_message_exists(row):
+    message_id = row["discord_message_id"]
+    if not message_id:
+        return False
+    try:
+        channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
+        await channel.fetch_message(int(message_id))
+        return True
+    except discord.NotFound:
+        return False
+    except Exception as exc:
+        print(f"[WARN] Could not verify Discord message {message_id}: {exc}")
+        return True
+
 async def import_existing_comments_once():
     projects = await asyncio.to_thread(discover_comment_projects)
     imported = 0
@@ -612,10 +627,24 @@ async def import_existing_comments_once():
                 continue
 
             comment_key = f"cf:{project['id']}:{cid}"
-            if get_comment(comment_key):
-                skipped_existing += 1
-                mark_cf_comment_seen(cid, project["id"])
-                continue
+            existing = get_comment(comment_key)
+            if existing:
+                # DONE/archived comments intentionally stay archived even if no public
+                # Discord message exists anymore.
+                if existing["status"] == "archived":
+                    skipped_existing += 1
+                    mark_cf_comment_seen(cid, project["id"])
+                    continue
+
+                # If somebody manually deleted the active Discord message, recreate it.
+                if await active_discord_message_exists(existing):
+                    skipped_existing += 1
+                    mark_cf_comment_seen(cid, project["id"])
+                    continue
+
+                db.execute("DELETE FROM comments WHERE id=?", (comment_key,))
+                db.commit()
+                print(f"[INFO] Recreating manually deleted Discord comment {comment_key}.")
 
             body = (item.get("text") or "").strip()
             if not body:
