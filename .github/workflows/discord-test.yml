@@ -1,0 +1,44 @@
+name: Discord Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/discord-test.yml"
+
+jobs:
+  send-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord test message
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from urllib.request import Request, urlopen
+
+          url = os.environ["DISCORD_WEBHOOK_URL"]
+          payload = {
+              "username": "CurseForge Updates",
+              "embeds": [{
+                  "title": "🧩 CurseForge Watcher Test",
+                  "description": "✅ Der Discord-Webhook funktioniert.\n\nDies ist nur eine Testnachricht – kein echtes Mod-Update.",
+                  "color": 15885366,
+                  "fields": [
+                      {"name": "Status", "value": "Connected", "inline": True},
+                      {"name": "Check interval", "value": "15 minutes", "inline": True}
+                  ],
+                  "footer": {"text": "CurseForge Update Watcher"}
+              }],
+              "allowed_mentions": {"parse": []}
+          }
+          req = Request(
+              url + ("&wait=true" if "?" in url else "?wait=true"),
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json", "User-Agent": "curseforge-discord-watcher-test/1.0"},
+              method="POST"
+          )
+          with urlopen(req, timeout=30) as r:
+              print("Discord response:", r.status)
+          PY
