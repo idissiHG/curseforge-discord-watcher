@@ -2,14 +2,17 @@
 import asyncio
 import json
 import hashlib
+import io
 import os
+import re
 import sqlite3
 import time
+import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from urllib.error import HTTPError, URLError
 
 import discord
@@ -25,6 +28,8 @@ GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID", "279789363825737728") or 0)
 GUILD_OBJ = discord.Object(id=GUILD_ID) if GUILD_ID else None
 CF_API_KEY = os.environ.get("CURSEFORGE_API_KEY", "").strip()
 COMMENT_POLL_SECONDS = int(os.environ.get("COMMENT_POLL_SECONDS", "60") or 60)
+PROJECTS_CHANNEL_ID = int(os.environ.get("DISCORD_PROJECTS_CHANNEL_ID", "1555906276888809553") or 0)
+PROJECTS_REFRESH_SECONDS = int(os.environ.get("PROJECTS_REFRESH_SECONDS", "900") or 900)
 IGNORE_CF_AUTHORS = {
     x.strip().lower()
     for x in os.environ.get("COMMENT_IGNORE_AUTHOR_NAMES", "IDiSSi").split(",")
@@ -715,6 +720,248 @@ async def import_existing_comments_once():
     set_meta("cf_comments_initialized", "1")
     return imported, skipped_own, skipped_existing
 
+
+def cf_project_class(mod):
+    url = ((mod.get("links") or {}).get("websiteUrl") or "").lower()
+    if "/modpacks/" in url:
+        return "MODPACK"
+    if "/mc-mods/" in url:
+        return "MOD"
+    return "PROJECT"
+
+def cf_latest_file(mod):
+    files = mod.get("latestFiles") or []
+    if not files:
+        return None
+    return max(files, key=lambda f: (f.get("fileDate", ""), int(f.get("id", 0))))
+
+def cf_file_loader(file_info):
+    if not file_info:
+        return ""
+    versions = [str(v) for v in (file_info.get("gameVersions") or [])]
+    for loader in ("NeoForge", "Forge", "Fabric", "Quilt"):
+        if any(v.lower() == loader.lower() for v in versions):
+            return loader
+    return ""
+
+def cf_file_mc_versions(file_info):
+    if not file_info:
+        return []
+    versions = [str(v) for v in (file_info.get("gameVersions") or [])]
+    excluded = {"neoforge", "forge", "fabric", "quilt", "java"}
+    candidates = [v for v in versions if v.lower() not in excluded]
+    likely = [v for v in candidates if re.match(r"^\d+(\.\d+){1,3}([\-+].*)?$", v)]
+    return likely[:3] if likely else candidates[:3]
+
+def cf_modpack_manifest_info(mod_id, file_info):
+    if not file_info:
+        return {"mod_count": None, "loader": "", "loader_version": ""}
+
+    detailed = file_info
+    if not detailed.get("downloadUrl") and detailed.get("id"):
+        try:
+            detailed = cf_api_get(f"/mods/{mod_id}/files/{detailed['id']}").get("data") or file_info
+        except Exception:
+            detailed = file_info
+
+    download_url = detailed.get("downloadUrl")
+    if not download_url and detailed.get("id"):
+        try:
+            download_url = cf_api_get(f"/mods/{mod_id}/files/{detailed['id']}/download-url").get("data", "")
+        except Exception:
+            download_url = ""
+
+    if not download_url and detailed.get("id") and detailed.get("fileName"):
+        file_id = int(detailed["id"])
+        first = file_id // 1000
+        last = file_id % 1000
+        filename = quote(str(detailed["fileName"]))
+        download_url = f"https://edge.forgecdn.net/files/{first}/{last:03d}/{filename}"
+
+    if not download_url:
+        return {"mod_count": None, "loader": "", "loader_version": ""}
+
+    try:
+        req = Request(download_url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; IDiSSi-CF-Bot/1.0)",
+            "Accept": "*/*"
+        })
+        with urlopen(req, timeout=60) as res:
+            data = res.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            manifest_name = "manifest.json"
+            if manifest_name not in zf.namelist():
+                matches = [n for n in zf.namelist() if n.endswith("/manifest.json")]
+                if not matches:
+                    return {"mod_count": None, "loader": "", "loader_version": ""}
+                manifest_name = matches[0]
+
+            manifest = json.loads(zf.read(manifest_name).decode("utf-8"))
+            minecraft = manifest.get("minecraft") or {}
+            loader_name = ""
+            loader_version = ""
+            for item in minecraft.get("modLoaders") or []:
+                raw = str(item.get("id") or "")
+                lower = raw.lower()
+                for prefix, label in (
+                    ("neoforge-", "NeoForge"),
+                    ("forge-", "Forge"),
+                    ("fabric-", "Fabric"),
+                    ("quilt-", "Quilt"),
+                ):
+                    if lower.startswith(prefix):
+                        loader_name = label
+                        loader_version = raw.split("-", 1)[1]
+                        break
+                if loader_name:
+                    break
+
+            return {
+                "mod_count": len(manifest.get("files") or []),
+                "loader": loader_name,
+                "loader_version": loader_version,
+            }
+    except Exception as exc:
+        print(f"[WARN] Could not inspect modpack manifest for {mod_id}: {exc}")
+        return {"mod_count": None, "loader": "", "loader_version": ""}
+
+def cf_fmt_downloads(value):
+    try:
+        return f"{int(value):,}".replace(",", ".")
+    except Exception:
+        return "0"
+
+def fetch_project_overview_data():
+    projects = discover_comment_projects()
+    by_id = {}
+    for project in projects:
+        try:
+            mod = cf_api_get(f"/mods/{int(project['id'])}").get("data") or {}
+            if mod:
+                by_id[int(project["id"])] = mod
+        except Exception as exc:
+            print(f"[WARN] Overview fetch failed for {project.get('name')} ({project.get('id')}): {exc}")
+    return list(by_id.values())
+
+def build_project_overview_embed(projects):
+    modpacks = []
+    mods = []
+    others = []
+    total_downloads = 0
+
+    configured_loader_versions = {
+        1381868: "47.4.10",
+        1714863: "",
+        1716068: "26.2.0.88",
+        1716091: "26.2.0.88",
+        1716016: "26.2.0.88",
+        1718239: "26.2.0.88",
+        1716123: "26.2.0.88",
+    }
+
+    for mod in sorted(projects, key=lambda m: (m.get("name") or "").lower()):
+        mid = int(mod.get("id") or 0)
+        name = mod.get("name") or f"Project {mid}"
+        url = ((mod.get("links") or {}).get("websiteUrl") or "https://www.curseforge.com/")
+        downloads = int(mod.get("downloadCount") or 0)
+        total_downloads += downloads
+        kind = cf_project_class(mod)
+        latest = cf_latest_file(mod)
+
+        if latest:
+            mc_versions = cf_file_mc_versions(latest)
+            loader = cf_file_loader(latest)
+            info_parts = []
+            if mc_versions:
+                info_parts.append("Minecraft " + ", ".join(mc_versions))
+
+            if kind == "MODPACK":
+                pack_info = cf_modpack_manifest_info(mid, latest)
+                if pack_info.get("loader"):
+                    loader = pack_info["loader"]
+                if loader:
+                    info_parts.append(loader)
+                loader_version = pack_info.get("loader_version") or configured_loader_versions.get(mid, "")
+                if loader_version:
+                    info_parts.append("Modloader Version " + loader_version)
+                if pack_info.get("mod_count") is not None:
+                    info_parts.append(f"{pack_info['mod_count']} Mods")
+            else:
+                if loader:
+                    info_parts.append(loader)
+                loader_version = configured_loader_versions.get(mid, "")
+                if loader_version:
+                    info_parts.append("Modloader Version " + loader_version)
+
+            info_line = " • ".join(info_parts) if info_parts else "Release information unavailable"
+        else:
+            info_line = "No release yet"
+
+        entry = f"**[{name}]({url})**\n*{info_line}*\n**{cf_fmt_downloads(downloads)}** downloads"
+
+        if kind == "MODPACK":
+            modpacks.append(entry)
+        elif kind == "MOD":
+            mods.append(entry)
+        else:
+            others.append(entry)
+
+    sections = []
+    if modpacks:
+        sections.append("## 📦 MODPACKS\n\n" + "\n\n".join(modpacks))
+    if mods:
+        sections.append("## 🧩 MODS\n\n" + "\n\n".join(mods))
+    if others:
+        sections.append("## 🔹 OTHER PROJECTS\n\n" + "\n\n".join(others))
+
+    berlin_now = datetime.now(ZoneInfo("Europe/Berlin"))
+    summary = (
+        f"**Total Projects**: {len(projects)}"
+        f" **• Total Downloads**: {cf_fmt_downloads(total_downloads)}"
+        f" **• Last Update:** {berlin_now.strftime('%H:%M')}"
+    )
+
+    embed = discord.Embed(
+        description=("\n\n".join(sections) if sections else "No projects found.") + "\n\n" + summary,
+        color=0xF16436
+    )
+    return embed
+
+async def update_project_overview_once():
+    if not PROJECTS_CHANNEL_ID:
+        return
+    projects = await asyncio.to_thread(fetch_project_overview_data)
+    embed = build_project_overview_embed(projects)
+    channel = bot.get_channel(PROJECTS_CHANNEL_ID) or await bot.fetch_channel(PROJECTS_CHANNEL_ID)
+
+    message_id = get_meta("projects_overview_message_id")
+    if message_id:
+        try:
+            msg = await channel.fetch_message(int(message_id))
+            await msg.edit(embed=embed)
+            print(f"[OK] Updated project overview message {message_id}.")
+            return
+        except discord.NotFound:
+            pass
+        except Exception as exc:
+            print(f"[WARN] Could not edit project overview message {message_id}: {exc}")
+
+    msg = await channel.send(embed=embed)
+    set_meta("projects_overview_message_id", msg.id)
+    print(f"[OK] Created project overview message {msg.id}.")
+
+@tasks.loop(seconds=PROJECTS_REFRESH_SECONDS)
+async def project_overview_poller():
+    try:
+        await update_project_overview_once()
+    except Exception as exc:
+        print(f"[WARN] Project overview refresh failed: {exc}")
+
+@project_overview_poller.before_loop
+async def before_project_overview_poller():
+    await bot.wait_until_ready()
+
+
 @tasks.loop(seconds=COMMENT_POLL_SECONDS)
 async def curseforge_comment_poller():
     try:
@@ -735,6 +982,9 @@ async def on_ready():
 
     if not curseforge_comment_poller.is_running():
         curseforge_comment_poller.start()
+
+    if not project_overview_poller.is_running():
+        project_overview_poller.start()
 
     try:
         if GUILD_ID and GUILD_OBJ:
