@@ -37,6 +37,7 @@ DONE_DELAY_SECONDS = 60
 COUNTDOWN_STEP_SECONDS = 5
 
 intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 db = sqlite3.connect(DB_PATH)
