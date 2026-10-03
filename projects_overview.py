@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import json
+import io
 import os
 import re
 import sys
+import zipfile
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
@@ -164,10 +166,45 @@ def file_version_label(file_info):
         return ""
     return file_info.get("displayName") or file_info.get("fileName") or ""
 
+def modpack_mod_count(file_info):
+    if not file_info:
+        return None
+
+    download_url = file_info.get("downloadUrl")
+    if not download_url:
+        return None
+
+    try:
+        req = Request(
+            download_url,
+            headers={"User-Agent": "curseforge-project-overview/1.0"}
+        )
+        with urlopen(req, timeout=60) as res:
+            data = res.read()
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = set(zf.namelist())
+            manifest_name = "manifest.json"
+            if manifest_name not in names:
+                # Some archives may wrap files in a top-level folder.
+                matches = [n for n in names if n.endswith("/manifest.json")]
+                if not matches:
+                    return None
+                manifest_name = matches[0]
+
+            manifest = json.loads(zf.read(manifest_name).decode("utf-8"))
+            files = manifest.get("files") or []
+            return len(files)
+    except Exception as e:
+        print(f"[WARN] Could not count modpack contents: {e}")
+        return None
+
 def build_embeds(projects, state, now):
     projects_sorted = sorted(projects, key=lambda m: (m.get("name") or "").lower())
-    lines = []
     total_downloads = 0
+    modpacks = []
+    mods = []
+    others = []
 
     for mod in projects_sorted:
         mid = str(mod.get("id"))
@@ -186,9 +223,8 @@ def build_embeds(projects, state, now):
 
         prefix = "🆕 **NEW** • " if is_new else ""
         kind = class_label(mod)
-        kind_icon = "🧩" if kind == "MOD" else ("📦" if kind == "MODPACK" else "🔹")
-
         latest = latest_file(mod)
+
         if latest:
             mc_versions = file_minecraft_versions(latest)
             loader = file_loader(latest)
@@ -199,6 +235,12 @@ def build_embeds(projects, state, now):
                 info_parts.append("Minecraft " + ", ".join(mc_versions))
             if loader:
                 info_parts.append(loader)
+
+            if kind == "MODPACK":
+                count = modpack_mod_count(latest)
+                if count is not None:
+                    info_parts.append(f"{count} Mods")
+
             if release_version:
                 info_parts.append("Version " + release_version)
 
@@ -206,11 +248,29 @@ def build_embeds(projects, state, now):
         else:
             info_line = "No release yet"
 
-        lines.append(
-            f"{prefix}{kind_icon} **{kind}** • **[{name}]({url})**\n"
+        entry = (
+            f"{prefix}**[{name}]({url})**\n"
             f"*{info_line}*\n"
             f"⬇️ **{fmt_downloads(downloads)}** downloads"
         )
+
+        if kind == "MODPACK":
+            modpacks.append(entry)
+        elif kind == "MOD":
+            mods.append(entry)
+        else:
+            others.append(entry)
+
+    sections = []
+
+    if modpacks:
+        sections.append("## 📦 MODPACKS\n\n" + "\n\n".join(modpacks))
+
+    if mods:
+        sections.append("## 🧩 MODS\n\n" + "\n\n".join(mods))
+
+    if others:
+        sections.append("## 🔹 OTHER PROJECTS\n\n" + "\n\n".join(others))
 
     berlin_now = now.astimezone(ZoneInfo("Europe/Berlin"))
     summary_line = (
@@ -218,24 +278,20 @@ def build_embeds(projects, state, now):
         f"  **•  Last Update: {berlin_now.strftime('%H:%M')}**"
     )
 
-    # Keep enough room for the summary line on the final embed.
+    body = "\n\n".join(sections) if sections else "No projects found."
+    body += "\n\n" + summary_line
+
     chunks = []
     current = ""
-    for entry in lines:
-        candidate = entry if not current else current + "\n\n" + entry
-        if len(candidate) > 3400:
+    for block in body.split("\n\n"):
+        candidate = block if not current else current + "\n\n" + block
+        if len(candidate) > 3400 and current:
             chunks.append(current)
-            current = entry
+            current = block
         else:
             current = candidate
     if current:
         chunks.append(current)
-
-    if not chunks:
-        chunks = ["No projects found."]
-
-    # Add the summary after a blank line at the bottom.
-    chunks[-1] = chunks[-1] + "\n\n" + summary_line
 
     embeds = []
     for i, chunk in enumerate(chunks):
