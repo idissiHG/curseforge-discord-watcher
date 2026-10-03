@@ -18,6 +18,7 @@ load_dotenv()
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 MAIN_CHANNEL_ID = int(os.environ.get("DISCORD_COMMENTS_CHANNEL_ID", "0") or 0)
+GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID", "279789363825737728") or 0)
 
 def parse_ids(name):
     raw = os.environ.get(name, "")
@@ -375,8 +376,14 @@ async def on_ready():
     await ensure_archive_message()
 
     try:
-        synced = await bot.tree.sync()
-        print(f"[OK] Synced {len(synced)} slash commands")
+        if GUILD_ID:
+            guild = discord.Object(id=GUILD_ID)
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            print(f"[OK] Synced {len(synced)} slash commands to guild {GUILD_ID}")
+        else:
+            synced = await bot.tree.sync()
+            print(f"[OK] Synced {len(synced)} global slash commands")
     except Exception as exc:
         print(f"[WARN] Slash command sync failed: {exc}")
 
