@@ -3,6 +3,7 @@ import json
 import os
 import sys
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
@@ -156,12 +157,18 @@ def build_embeds(projects, state, now):
             f"⬇️ **{fmt_downloads(downloads)}** downloads"
         )
 
-    # Split conservatively below Discord embed description limits.
+    berlin_now = now.astimezone(ZoneInfo("Europe/Berlin"))
+    summary_line = (
+        f"**Total Downloads:** {fmt_downloads(total_downloads)}"
+        f"  •  **Last Update:** {berlin_now.strftime('%H:%M')}"
+    )
+
+    # Keep enough room for the summary line on the final embed.
     chunks = []
     current = ""
     for entry in lines:
         candidate = entry if not current else current + "\n\n" + entry
-        if len(candidate) > 3600:
+        if len(candidate) > 3400:
             chunks.append(current)
             current = entry
         else:
@@ -169,31 +176,24 @@ def build_embeds(projects, state, now):
     if current:
         chunks.append(current)
 
+    if not chunks:
+        chunks = ["No projects found."]
+
+    # Add the summary after a blank line at the bottom.
+    chunks[-1] = chunks[-1] + "\n\n" + summary_line
+
     embeds = []
     for i, chunk in enumerate(chunks):
         title = "📦 My CurseForge Projects"
         if len(chunks) > 1:
             title += f" ({i+1}/{len(chunks)})"
-        embed = {
+        embeds.append({
             "title": title,
-            "description": chunk or "No projects found.",
-            "color": 0xF16436,
-        }
-        if i == 0:
-            embed["fields"] = [
-                {"name": "Projects", "value": str(len(projects_sorted)), "inline": True},
-                {"name": "Total downloads", "value": fmt_downloads(total_downloads), "inline": True}
-            ]
-        if i == len(chunks) - 1:
-            embed["footer"] = {"text": "Automatically updated every 15 minutes • NEW stays visible for 24h"}
-            embed["timestamp"] = now.isoformat().replace("+00:00", "Z")
-        embeds.append(embed)
+            "description": chunk,
+            "color": 0xF16436
+        })
 
-    return embeds or [{
-        "title": "📦 My CurseForge Projects",
-        "description": "No projects found.",
-        "color": 0xF16436
-    }]
+    return embeds
 
 def webhook_post(payload):
     if not WEBHOOK_URL:
