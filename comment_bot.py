@@ -180,12 +180,7 @@ def project_icon(project_type):
     }.get(kind, "🔹")
 
 def make_embed(row):
-    title = (
-        f"{project_icon(row_value(row, 'project_type', 'PROJECT'))} "
-        f"{row_value(row, 'project_name', 'Unknown Project')} - "
-        f"{display_date(row)} - "
-        f"{status_text(row_value(row, 'status', 'new'))}"
-    )
+    project_name = str(row_value(row, "project_name", "Unknown Project"))
     comment_url = str(
         row_value(row, "comment_url", "")
         or row_value(row, "source_url", "")
@@ -193,10 +188,23 @@ def make_embed(row):
         or ""
     ).strip()
 
+    if comment_url:
+        project_text = f"[**{project_name}**]({comment_url})"
+    else:
+        project_text = f"**{project_name}**"
+
+    header = (
+        f"{project_icon(row_value(row, 'project_type', 'PROJECT'))} "
+        f"{project_text} - {display_date(row)} - "
+        f"**{status_text(row_value(row, 'status', 'new'))}**"
+    )
+
     embed = discord.Embed(
-        title=title,
-        url=comment_url or None,
-        description=f"**{row_value(row, 'author_name', 'Unknown User')}**\n\n{row_value(row, 'body', '')}",
+        description=(
+            f"{header}\n\n"
+            f"**{row_value(row, 'author_name', 'Unknown User')}**\n\n"
+            f"{row_value(row, 'body', '')}"
+        ),
         color=0xF16436
     )
     embed.set_footer(text=f"ID: {short_comment_id(row_value(row, 'id', 'unknown'))}")
@@ -333,21 +341,31 @@ def archive_embed(entry):
     if isinstance(entry, str):
         return discord.Embed(description=entry, color=0xF16436)
 
-    title = (
-        f"{project_icon(entry.get('project_type') or 'PROJECT')} "
-        f"{entry.get('project_name') or 'Unknown Project'} - "
-        f"{entry.get('created_at') or 'Unknown date'} - DONE"
-    )
+    project_name = str(entry.get("project_name") or "Unknown Project")
     comment_url = (
         entry.get("comment_url")
         or entry.get("source_url")
         or entry.get("project_url")
         or ""
     ).strip()
+
+    if comment_url:
+        project_text = f"[**{project_name}**]({comment_url})"
+    else:
+        project_text = f"**{project_name}**"
+
+    header = (
+        f"{project_icon(entry.get('project_type') or 'PROJECT')} "
+        f"{project_text} - "
+        f"{entry.get('created_at') or 'Unknown date'} - **DONE**"
+    )
+
     embed = discord.Embed(
-        title=title,
-        url=comment_url or None,
-        description=f"**{entry.get('author_name') or 'Unknown User'}**\n\n{entry.get('body') or ''}",
+        description=(
+            f"{header}\n\n"
+            f"**{entry.get('author_name') or 'Unknown User'}**\n\n"
+            f"{entry.get('body') or ''}"
+        ),
         color=0xF16436
     )
     embed.set_footer(text=f"ID: {entry.get('public_id') or 'Unknown'}")
