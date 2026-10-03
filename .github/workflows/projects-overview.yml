@@ -1,8 +1,6 @@
 name: 2 - CurseForge Projektübersicht
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
