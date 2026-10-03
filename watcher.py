@@ -169,12 +169,42 @@ def main():
             print(f"[ERROR] Failed checking {mod_id}: {e}")
             continue
         if not latest:
-            print(f"[WARN] No available files found for {mod_id}.")
+            print(f"[INFO] {project_name}: no available files yet.")
+            existing = state["projects"].get(mod_id, {})
+            if existing.get("last_file_id") is None and not existing.get("waiting_for_first_file"):
+                state["projects"][mod_id] = {
+                    "waiting_for_first_file": True
+                }
+                changed = True
+                print(f"[INIT] {project_name}: waiting for first published file.")
             continue
         latest_id = int(latest["id"])
         old_id = state["projects"].get(mod_id,{}).get("last_file_id")
         project_name = cfg.get("name") or mod.get("name") or mod_id
         if old_id is None:
+            waiting_for_first = state["projects"].get(mod_id, {}).get("waiting_for_first_file", False)
+            if waiting_for_first:
+                print(f"[NEW] {project_name}: first published file detected -> {latest_id}")
+                changelog = get_changelog(mod_id, latest_id)
+                try:
+                    discord_post({
+                        "username": config.get("discord_username","CurseForge Updates"),
+                        "avatar_url": config.get("discord_avatar_url") or None,
+                        "embeds": [build_embed(mod,latest,changelog,cfg)],
+                        "allowed_mentions":{"parse":[]}
+                    })
+                except Exception as e:
+                    print(f"[ERROR] Discord post failed for {project_name}: {e}")
+                    continue
+                state["projects"][mod_id] = {
+                    "last_file_id": latest_id,
+                    "last_file_date": latest.get("fileDate"),
+                    "last_display_name": latest.get("displayName") or latest.get("fileName")
+                }
+                changed = True
+                notifications += 1
+                continue
+
             print(f"[INIT] {project_name}: baseline set to file {latest_id}; no Discord post.")
             state["projects"][mod_id] = {
                 "last_file_id": latest_id,
