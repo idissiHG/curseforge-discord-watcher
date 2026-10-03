@@ -220,7 +220,7 @@ def archive_entry(row):
         details += f"\n\nPosted: {row['created_at']}"
     if row["source_url"]:
         details += f"\n{row['source_url']}"
-    return f"**{title}**\n||{details}||"
+    return f"**{title}**\n{details}"
 
 async def update_archive_message(row):
     channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
@@ -235,10 +235,13 @@ async def update_archive_message(row):
 
     # Keep newest archive entries if Discord's message length would be exceeded.
     header = "## 🗃️ ARCHIV\n\n"
-    while entries and len(header + "\n\n".join(entries)) > 3900:
-        entries.pop(0)
+    archive_body = "\n\n".join(entries) if entries else "Noch keine erledigten Kommentare."
 
-    content = header + ("\n\n".join(entries) if entries else "*Noch keine erledigten Kommentare.*")
+    while entries and len(header + "||" + archive_body + "||") > 3900:
+        entries.pop(0)
+        archive_body = "\n\n".join(entries) if entries else "Noch keine erledigten Kommentare."
+
+    content = header + "||" + archive_body + "||"
 
     if archive_message_id:
         try:
