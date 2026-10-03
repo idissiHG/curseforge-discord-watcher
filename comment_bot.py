@@ -160,20 +160,24 @@ def display_date(row):
     value = (row["created_at"] or "").strip()
     return value or "Unknown date"
 
+def project_icon(project_type):
+    kind = str(project_type or "PROJECT").upper()
+    return {
+        "MOD": "🧩",
+        "MODPACK": "📦",
+        "PROJECT": "🔹"
+    }.get(kind, "🔹")
+
 def make_embed(row):
-    project_type = (row["project_type"] or "PROJECT").upper()
-    title = f"{project_type} {row['project_name']} - {display_date(row)} - {status_text(row['status'])}"
-    project_url = (row["project_url"] or "").strip()
-    comment_url = (row["comment_url"] or row["source_url"] or "").strip()
+    title = f"{project_icon(row['project_type'])} {row['project_name']} - {display_date(row)} - {status_text(row['status'])}"
+    comment_url = (row["comment_url"] or row["source_url"] or row["project_url"] or "").strip()
 
     embed = discord.Embed(
         title=title,
-        url=project_url or None,
+        url=comment_url or None,
         description=f"**{row['author_name']}**\n\n{row['body']}",
         color=0xF16436
     )
-    if comment_url:
-        embed.add_field(name="Comment", value=f"[Open Comment]({comment_url})", inline=False)
     embed.set_footer(text=f"ID: {short_comment_id(row['id'])}")
     return embed
 
@@ -309,20 +313,22 @@ def archive_embed(entry):
         return discord.Embed(description=entry, color=0xF16436)
 
     title = (
-        f"{str(entry.get('project_type') or 'PROJECT').upper()} "
+        f"{project_icon(entry.get('project_type') or 'PROJECT')} "
         f"{entry.get('project_name') or 'Unknown Project'} - "
         f"{entry.get('created_at') or 'Unknown date'} - DONE"
     )
-    project_url = (entry.get("project_url") or "").strip()
-    comment_url = (entry.get("comment_url") or entry.get("source_url") or "").strip()
+    comment_url = (
+        entry.get("comment_url")
+        or entry.get("source_url")
+        or entry.get("project_url")
+        or ""
+    ).strip()
     embed = discord.Embed(
         title=title,
-        url=project_url or None,
+        url=comment_url or None,
         description=f"**{entry.get('author_name') or 'Unknown User'}**\n\n{entry.get('body') or ''}",
         color=0xF16436
     )
-    if comment_url:
-        embed.add_field(name="Comment", value=f"[Open Comment]({comment_url})", inline=False)
     embed.set_footer(text=f"ID: {entry.get('public_id') or 'Unknown'}")
     return embed
 
