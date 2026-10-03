@@ -159,8 +159,8 @@ def build_embeds(projects, state, now):
 
     berlin_now = now.astimezone(ZoneInfo("Europe/Berlin"))
     summary_line = (
-        f"**Total Downloads:** {fmt_downloads(total_downloads)}"
-        f"  •  **Last Update:** {berlin_now.strftime('%H:%M')}"
+        f"**Total Downloads** : {fmt_downloads(total_downloads)}"
+        f"  **•  Last Update: {berlin_now.strftime('%H:%M')}**"
     )
 
     # Keep enough room for the summary line on the final embed.
@@ -184,9 +184,9 @@ def build_embeds(projects, state, now):
 
     embeds = []
     for i, chunk in enumerate(chunks):
-        title = "📦 My CurseForge Projects"
+        title = f"📦 My CurseForge Projects ({len(projects_sorted)})"
         if len(chunks) > 1:
-            title += f" ({i+1}/{len(chunks)})"
+            title += f" • {i+1}/{len(chunks)}"
         embeds.append({
             "title": title,
             "description": chunk,
