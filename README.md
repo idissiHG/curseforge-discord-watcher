@@ -8,9 +8,9 @@ When a new CurseForge file appears, the workflow posts a Discord embed and remem
 
 1. Edit `config.json` and add your CurseForge project IDs.
 2. In GitHub go to **Settings → Secrets and variables → Actions**.
-3. Add:
-   - `$2a$10$yY7jb0Er/eEHllRqHZIPiurvDXXCYu5uacbvUo265e/1BVMcFeg.m`
-   - `https://discord.com/api/webhooks/1555899435580526592/uJM60ror0xRThG2xTJmalScbYwUVgrmgI1jLKW_akNq3zjlpG3sR-800MUEKu8gMsnMz`
+3. Add these repository secrets:
+   - `CURSEFORGE_API_KEY`
+   - `DISCORD_WEBHOOK_URL`
 4. Go to **Actions → CurseForge → Discord → Run workflow** once manually.
 
 On the first run, the watcher only records the current latest files and sends no old-release messages.
@@ -24,3 +24,11 @@ cron: "*/15 * * * *"
 ```
 
 GitHub scheduled workflows may occasionally start slightly later than the nominal 15-minute cadence.
+
+## Security
+
+Never put API keys or Discord webhook URLs into `README.md`, `config.json`, or any other committed file.
+
+Store them only under:
+
+**Settings → Secrets and variables → Actions → Repository secrets**
