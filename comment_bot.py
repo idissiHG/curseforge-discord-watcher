@@ -76,8 +76,8 @@ class CommentRecord:
     id: str
     project_name: str
     author_name: str
-    project_type: str = "PROJECT"
     body: str
+    project_type: str = "PROJECT"
     source_url: str = ""
     created_at: str = ""
 
