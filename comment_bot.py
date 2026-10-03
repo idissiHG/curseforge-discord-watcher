@@ -407,6 +407,22 @@ async def comment_test(ctx):
         created_at="Test"
     ))
 
+@bot.command(name="archive_clear")
+async def archive_clear(ctx):
+    allowed = (
+        ctx.author.id in ALLOWED_USER_IDS or
+        any(
+            role.id in ALLOWED_ROLE_IDS or role.name.lower() in ALLOWED_ROLE_NAMES
+            for role in getattr(ctx.author, "roles", [])
+        )
+    )
+    if not allowed:
+        return
+
+    set_meta("archive_entries", "[]")
+    await ensure_archive_message()
+    await ctx.reply("✅ Archive cleared.")
+
 @bot.command(name="archive_delete")
 async def archive_delete(ctx, public_id: str = ""):
     allowed = (
