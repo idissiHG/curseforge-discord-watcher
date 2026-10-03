@@ -6,6 +6,8 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import discord
 from dotenv import load_dotenv
@@ -384,6 +386,16 @@ async def on_ready():
         if row["status"] == "done_pending":
             asyncio.create_task(done_countdown(row["id"], row["discord_message_id"]))
 
+async def private_command_reply(ctx, text):
+    try:
+        await ctx.author.send(text)
+    except Exception:
+        pass
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
 @bot.command(name="comment_test")
 async def comment_test(ctx):
     # Temporary setup/test helper. Only authorized users can create test comments.
@@ -404,8 +416,12 @@ async def comment_test(ctx):
         project_type="MOD",
         body="This is a test comment for the In Progress / Done workflow.",
         source_url="",
-        created_at="Test"
+        created_at=datetime.now(ZoneInfo("Europe/Berlin")).strftime("%d.%m.%Y %H:%M")
     ))
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
 
 @bot.command(name="archive_clear")
 async def archive_clear(ctx):
@@ -421,7 +437,7 @@ async def archive_clear(ctx):
 
     set_meta("archive_entries", "[]")
     await ensure_archive_message()
-    await ctx.reply("✅ Archive cleared.")
+    await private_command_reply(ctx, "✅ Archive cleared.")
 
 @bot.command(name="archive_delete")
 async def archive_delete(ctx, public_id: str = ""):
@@ -437,7 +453,7 @@ async def archive_delete(ctx, public_id: str = ""):
 
     target = public_id.strip().upper()
     if not target:
-        await ctx.reply("Usage: !archive_delete CF-XXXXXXXX")
+        await private_command_reply(ctx, "Usage: !archive_delete CF-XXXXXXXX")
         return
 
     entries = get_archive_entries()
@@ -451,11 +467,11 @@ async def archive_delete(ctx, public_id: str = ""):
         kept.append(entry)
 
     if not removed:
-        await ctx.reply(f"Archive ID {target} not found.")
+        await private_command_reply(ctx, f"Archive ID {target} not found.")
         return
 
     set_meta("archive_entries", json.dumps(kept, ensure_ascii=False))
-    await ctx.reply(f"✅ {target} was removed from the archive.")
+    await private_command_reply(ctx, f"✅ {target} was removed from the archive.")
 
 if __name__ == "__main__":
     if not TOKEN:
