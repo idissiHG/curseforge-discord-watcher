@@ -11,7 +11,6 @@ from discord.ext import commands
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 MAIN_CHANNEL_ID = int(os.environ.get("DISCORD_COMMENTS_CHANNEL_ID", "0") or 0)
-ARCHIVE_CHANNEL_ID = int(os.environ.get("DISCORD_ARCHIVE_CHANNEL_ID", "0") or 0)
 
 def parse_ids(name):
     raw = os.environ.get(name, "")
@@ -24,6 +23,11 @@ def parse_ids(name):
 
 ALLOWED_USER_IDS = parse_ids("COMMENT_ALLOWED_USER_IDS")
 ALLOWED_ROLE_IDS = parse_ids("COMMENT_ALLOWED_ROLE_IDS")
+ALLOWED_ROLE_NAMES = {
+    x.strip().lower()
+    for x in os.environ.get("COMMENT_ALLOWED_ROLE_NAMES", "").split(",")
+    if x.strip()
+}
 
 DB_PATH = os.environ.get("COMMENT_DB_PATH", "comments.db")
 DONE_DELAY_SECONDS = 60
@@ -68,7 +72,11 @@ def is_allowed(interaction: discord.Interaction) -> bool:
     if interaction.user.id in ALLOWED_USER_IDS:
         return True
     roles = getattr(interaction.user, "roles", [])
-    return any(getattr(role, "id", 0) in ALLOWED_ROLE_IDS for role in roles)
+    return any(
+        getattr(role, "id", 0) in ALLOWED_ROLE_IDS
+        or getattr(role, "name", "").lower() in ALLOWED_ROLE_NAMES
+        for role in roles
+    )
 
 async def deny(interaction: discord.Interaction):
     text = "You don't have permission to manage CurseForge comments."
@@ -194,23 +202,63 @@ async def done_countdown(comment_id, message_id):
 
         await asyncio.sleep(min(COUNTDOWN_STEP_SECONDS, max(1, remaining)))
 
+def get_meta(key):
+    row = db.execute("SELECT value FROM bot_meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+def set_meta(key, value):
+    db.execute(
+        "INSERT INTO bot_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, str(value))
+    )
+    db.commit()
+
+def archive_entry(row):
+    title = f"✅ {row['project_name']} • {row['author_name']}"
+    details = row["body"].replace("||", "")
+    if row["created_at"]:
+        details += f"\n\nPosted: {row['created_at']}"
+    if row["source_url"]:
+        details += f"\n{row['source_url']}"
+    return f"**{title}**\n||{details}||"
+
+async def update_archive_message(row):
+    channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
+    archive_message_id = get_meta("archive_message_id")
+    entries_raw = get_meta("archive_entries") or "[]"
+    try:
+        entries = json.loads(entries_raw)
+    except Exception:
+        entries = []
+
+    entries.append(archive_entry(row))
+
+    # Keep newest archive entries if Discord's message length would be exceeded.
+    header = "## 🗃️ ARCHIV\n\n"
+    while entries and len(header + "\n\n".join(entries)) > 3900:
+        entries.pop(0)
+
+    content = header + ("\n\n".join(entries) if entries else "*Noch keine erledigten Kommentare.*")
+
+    if archive_message_id:
+        try:
+            msg = await channel.fetch_message(int(archive_message_id))
+            await msg.edit(content=content, embed=None, view=None)
+            set_meta("archive_entries", json.dumps(entries, ensure_ascii=False))
+            return
+        except discord.NotFound:
+            pass
+
+    msg = await channel.send(content)
+    set_meta("archive_message_id", msg.id)
+    set_meta("archive_entries", json.dumps(entries, ensure_ascii=False))
+
 async def archive_comment(comment_id):
     row = get_comment(comment_id)
     if not row or row["status"] != "done_pending":
         return
 
-    archive = bot.get_channel(ARCHIVE_CHANNEL_ID) or await bot.fetch_channel(ARCHIVE_CHANNEL_ID)
-    embed = discord.Embed(
-        title=f"✅ {row['project_name']}",
-        description=row["body"],
-        color=0x57F287
-    )
-    embed.add_field(name="Author", value=row["author_name"], inline=True)
-    if row["created_at"]:
-        embed.add_field(name="Posted", value=row["created_at"], inline=True)
-    if row["source_url"]:
-        embed.add_field(name="CurseForge", value=f"[Open comment]({row['source_url']})", inline=False)
-    await archive.send(embed=embed)
+    await update_archive_message(row)
 
     if row["discord_message_id"]:
         try:
@@ -267,7 +315,10 @@ async def comment_test(ctx):
     # Temporary setup/test helper. Only authorized users can create test comments.
     fake_interaction_user_allowed = (
         ctx.author.id in ALLOWED_USER_IDS or
-        any(role.id in ALLOWED_ROLE_IDS for role in getattr(ctx.author, "roles", []))
+        any(
+            role.id in ALLOWED_ROLE_IDS or role.name.lower() in ALLOWED_ROLE_NAMES
+            for role in getattr(ctx.author, "roles", [])
+        )
     )
     if not fake_interaction_user_allowed:
         return
@@ -284,8 +335,8 @@ async def comment_test(ctx):
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("DISCORD_BOT_TOKEN is missing.")
-    if not MAIN_CHANNEL_ID or not ARCHIVE_CHANNEL_ID:
-        raise SystemExit("DISCORD_COMMENTS_CHANNEL_ID and DISCORD_ARCHIVE_CHANNEL_ID are required.")
-    if not ALLOWED_USER_IDS and not ALLOWED_ROLE_IDS:
-        raise SystemExit("At least one allowed Discord user ID or role ID is required.")
+    if not MAIN_CHANNEL_ID:
+        raise SystemExit("DISCORD_COMMENTS_CHANNEL_ID is required.")
+    if not ALLOWED_USER_IDS and not ALLOWED_ROLE_IDS and not ALLOWED_ROLE_NAMES:
+        raise SystemExit("At least one allowed Discord user ID, role ID, or role name is required.")
     bot.run(TOKEN)
