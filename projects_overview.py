@@ -8,7 +8,7 @@ import zipfile
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from urllib.error import HTTPError, URLError
 
 API_BASE = "https://api.curseforge.com/v1"
@@ -191,6 +191,16 @@ def modpack_manifest_info(mod_id, file_info, project_url=""):
                 print(f"[INFO] Loaded direct CurseForge download URL for {mod_id}: file {detailed['id']}")
         except Exception as e:
             print(f"[WARN] Could not get CurseForge download URL for {mod_id}: {e}")
+
+    # Some CurseForge projects return 403 for the download-url endpoint.
+    # Fall back to the public ForgeCDN path derived from file ID + filename.
+    if not download_url and detailed.get("id") and detailed.get("fileName"):
+        file_id = int(detailed["id"])
+        first = file_id // 1000
+        last = file_id % 1000
+        filename = quote(str(detailed["fileName"]))
+        download_url = f"https://edge.forgecdn.net/files/{first}/{last:03d}/{filename}"
+        print(f"[INFO] Using ForgeCDN fallback for {mod_id}: file {file_id}")
 
     if not download_url:
         return {"mod_count": None, "loader": "", "loader_version": ""}
