@@ -1,4 +1,4 @@
-name: Discord Test
+name: TEST - Discord Webhook
 
 on:
   push:
