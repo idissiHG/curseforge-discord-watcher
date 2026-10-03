@@ -72,6 +72,9 @@ def get_mod(mod_id):
 def get_file(mod_id, file_id):
     return cf_get(f"/mods/{mod_id}/files/{file_id}").get("data", {})
 
+def get_file_download_url(mod_id, file_id):
+    return cf_get(f"/mods/{mod_id}/files/{file_id}/download-url").get("data", "")
+
 def search_owned_projects(author_id):
     params = {
         "gameId": MINECRAFT_GAME_ID,
@@ -181,9 +184,13 @@ def modpack_manifest_info(mod_id, file_info, project_url=""):
             print(f"[WARN] Could not fetch detailed file info for {mod_id}: {e}")
 
     download_url = detailed.get("downloadUrl")
-    if not download_url and project_url and detailed.get("id"):
-        download_url = project_url.rstrip("/") + f"/download/{detailed['id']}/file"
-        print(f"[INFO] Using CurseForge public download fallback for {mod_id}: file {detailed['id']}")
+    if not download_url and detailed.get("id"):
+        try:
+            download_url = get_file_download_url(mod_id, detailed["id"])
+            if download_url:
+                print(f"[INFO] Loaded direct CurseForge download URL for {mod_id}: file {detailed['id']}")
+        except Exception as e:
+            print(f"[WARN] Could not get CurseForge download URL for {mod_id}: {e}")
 
     if not download_url:
         return {"mod_count": None, "loader": "", "loader_version": ""}
