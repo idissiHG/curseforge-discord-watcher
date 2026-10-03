@@ -587,6 +587,60 @@ async def poll_curseforge_comments_once():
     elif found:
         print(f"[NEW] Posted {found} new CurseForge comment(s) to Discord.")
 
+
+async def import_existing_comments_once():
+    projects = await asyncio.to_thread(discover_comment_projects)
+    imported = 0
+    skipped_own = 0
+    skipped_existing = 0
+
+    for project in projects:
+        try:
+            comments = await asyncio.to_thread(fetch_cf_comments, project["id"])
+        except Exception as exc:
+            print(f"[WARN] Existing comment import failed for {project['name']} ({project['id']}): {exc}")
+            continue
+
+        for item in sorted(flatten_cf_comments(comments), key=lambda x: int(x.get("datePosted") or 0)):
+            cid = item.get("id")
+            if not isinstance(cid, int):
+                continue
+
+            if cf_comment_is_own(item):
+                skipped_own += 1
+                mark_cf_comment_seen(cid, project["id"])
+                continue
+
+            comment_key = f"cf:{project['id']}:{cid}"
+            if get_comment(comment_key):
+                skipped_existing += 1
+                mark_cf_comment_seen(cid, project["id"])
+                continue
+
+            body = (item.get("text") or "").strip()
+            if not body:
+                mark_cf_comment_seen(cid, project["id"])
+                continue
+
+            project_url = (project.get("url") or "").rstrip("/")
+            comments_url = project_url + "/comments" if project_url else ""
+
+            await publish_comment(CommentRecord(
+                id=comment_key,
+                project_name=project.get("name") or f"Project {project['id']}",
+                author_name=cf_comment_author_name(item),
+                body=body,
+                project_type=project.get("type") or "PROJECT",
+                project_url=project_url,
+                comment_url=comments_url,
+                created_at=cf_comment_date(item.get("datePosted"))
+            ))
+            mark_cf_comment_seen(cid, project["id"])
+            imported += 1
+
+    set_meta("cf_comments_initialized", "1")
+    return imported, skipped_own, skipped_existing
+
 @tasks.loop(seconds=COMMENT_POLL_SECONDS)
 async def curseforge_comment_poller():
     try:
@@ -713,6 +767,31 @@ async def slash_archive_delete(interaction: discord.Interaction, public_id: str)
         ephemeral=True
     )
 
+
+
+@bot.tree.command(name="comments_import_existing", description="Import existing CurseForge comments once")
+@app_commands.guilds(GUILD_OBJ)
+async def slash_comments_import_existing(interaction: discord.Interaction):
+    if not interaction_allowed(interaction):
+        return await interaction.response.send_message(
+            "You don't have permission to manage CurseForge comments.",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        imported, skipped_own, skipped_existing = await import_existing_comments_once()
+        await interaction.followup.send(
+            f"✅ Existing comments imported: {imported}\n"
+            f"Skipped own replies: {skipped_own}\n"
+            f"Already present: {skipped_existing}",
+            ephemeral=True
+        )
+    except Exception as exc:
+        await interaction.followup.send(
+            f"❌ Existing comment import failed: {exc}",
+            ephemeral=True
+        )
 
 @bot.tree.command(name="comments_check", description="Check CurseForge comments now")
 @app_commands.guilds(GUILD_OBJ)
