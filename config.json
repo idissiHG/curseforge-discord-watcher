@@ -5,7 +5,8 @@
     {
       "name": "Applied Energistics 2 - Unofficial Port",
       "mod_id": 1716068,
-      "embed_color": "F16436"
+      "embed_color": "F16436",
+      "modloader_version": "26.2.0.88"
     },
     {
       "name": "DyssiCore",
@@ -15,27 +16,32 @@
     {
       "name": "DyssiCore NF",
       "mod_id": 1714863,
-      "embed_color": "F16436"
+      "embed_color": "F16436",
+      "modloader_version": "26.2.0.88"
     },
     {
       "name": "FramedBlocks - Unofficial Port",
       "mod_id": 1716091,
-      "embed_color": "F16436"
+      "embed_color": "F16436",
+      "modloader_version": "26.2.0.88"
     },
     {
       "name": "GuideME - Unofficial Port",
       "mod_id": 1716016,
-      "embed_color": "F16436"
+      "embed_color": "F16436",
+      "modloader_version": "26.2.0.88"
     },
     {
       "name": "Mantle - Unofficial Community Port",
       "mod_id": 1718239,
-      "embed_color": "F16436"
+      "embed_color": "F16436",
+      "modloader_version": "26.2.0.88"
     },
     {
       "name": "PamTreeWood - Expanded",
       "mod_id": 1716123,
-      "embed_color": "F16436"
+      "embed_color": "F16436",
+      "modloader_version": "26.2.0.88"
     }
   ]
 }
