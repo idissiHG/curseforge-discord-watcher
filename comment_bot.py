@@ -226,39 +226,62 @@ def archive_entry(row):
         details += f"\n{row['source_url']}"
     return f"**{title}**\n{details}"
 
-async def update_archive_message(row):
-    channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
-    archive_message_id = get_meta("archive_message_id")
+def get_archive_entries():
     entries_raw = get_meta("archive_entries") or "[]"
     try:
-        entries = json.loads(entries_raw)
+        return json.loads(entries_raw)
     except Exception:
-        entries = []
+        return []
 
-    entries.append(archive_entry(row))
+class ArchiveView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    # Keep newest archive entries if Discord's message length would be exceeded.
-    header = "## 🗃️ ARCHIV\n\n"
-    archive_body = "\n\n".join(entries) if entries else "Noch keine erledigten Kommentare."
+    @discord.ui.button(
+        label="Archiv anzeigen",
+        style=discord.ButtonStyle.secondary,
+        custom_id="cf_archive_show"
+    )
+    async def show_archive(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_allowed(interaction):
+            return await deny(interaction)
 
-    while entries and len(header + "||" + archive_body + "||") > 3900:
-        entries.pop(0)
-        archive_body = "\n\n".join(entries) if entries else "Noch keine erledigten Kommentare."
+        entries = get_archive_entries()
+        if not entries:
+            text = "🗃️ Das Archiv ist aktuell leer."
+        else:
+            text = "## 🗃️ ARCHIV\n\n" + "\n\n".join(entries)
+            if len(text) > 1900:
+                text = text[-1900:]
 
-    content = header + "||" + archive_body + "||"
+        await interaction.response.send_message(text, ephemeral=True)
+
+async def ensure_archive_message():
+    channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
+    archive_message_id = get_meta("archive_message_id")
 
     if archive_message_id:
         try:
             msg = await channel.fetch_message(int(archive_message_id))
-            await msg.edit(content=content, embed=None, view=None)
-            set_meta("archive_entries", json.dumps(entries, ensure_ascii=False))
-            return
+            await msg.edit(content="## 🗃️ ARCHIV", embed=None, view=ArchiveView())
+            return msg
         except discord.NotFound:
             pass
 
-    msg = await channel.send(content)
+    msg = await channel.send("## 🗃️ ARCHIV", view=ArchiveView())
     set_meta("archive_message_id", msg.id)
+    return msg
+
+async def update_archive_message(row):
+    entries = get_archive_entries()
+    entries.append(archive_entry(row))
+
+    # Keep newest archive entries if storage grows too large.
+    while entries and len(json.dumps(entries, ensure_ascii=False)) > 12000:
+        entries.pop(0)
+
     set_meta("archive_entries", json.dumps(entries, ensure_ascii=False))
+    await ensure_archive_message()
 
 async def archive_comment(comment_id):
     row = get_comment(comment_id)
@@ -304,6 +327,9 @@ async def publish_comment(comment: CommentRecord):
 @bot.event
 async def on_ready():
     print(f"[OK] Logged in as {bot.user} ({bot.user.id})")
+
+    bot.add_view(ArchiveView())
+    await ensure_archive_message()
 
     # Restore persistent views and pending countdowns after a restart.
     rows = db.execute(
