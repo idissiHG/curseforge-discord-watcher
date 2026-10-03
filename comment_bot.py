@@ -144,6 +144,17 @@ async def deny(interaction: discord.Interaction):
 def get_comment(comment_id):
     return db.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
 
+def row_value(row, key, default=None):
+    if row is None:
+        return default
+    try:
+        if hasattr(row, "keys") and key not in row.keys():
+            return default
+        value = row[key]
+        return default if value is None else value
+    except (KeyError, IndexError, TypeError):
+        return default
+
 def short_comment_id(comment_id):
     digest = hashlib.sha1(str(comment_id).encode("utf-8")).hexdigest()[:8].upper()
     return f"CF-{digest}"
@@ -157,7 +168,7 @@ def status_text(status):
     }.get(status, str(status).upper())
 
 def display_date(row):
-    value = (row["created_at"] or "").strip()
+    value = str(row_value(row, "created_at", "") or "").strip()
     return value or "Unknown date"
 
 def project_icon(project_type):
@@ -169,16 +180,26 @@ def project_icon(project_type):
     }.get(kind, "🔹")
 
 def make_embed(row):
-    title = f"{project_icon(row['project_type'])} {row['project_name']} - {display_date(row)} - {status_text(row['status'])}"
-    comment_url = (row["comment_url"] or row["source_url"] or row["project_url"] or "").strip()
+    title = (
+        f"{project_icon(row_value(row, 'project_type', 'PROJECT'))} "
+        f"{row_value(row, 'project_name', 'Unknown Project')} - "
+        f"{display_date(row)} - "
+        f"{status_text(row_value(row, 'status', 'new'))}"
+    )
+    comment_url = str(
+        row_value(row, "comment_url", "")
+        or row_value(row, "source_url", "")
+        or row_value(row, "project_url", "")
+        or ""
+    ).strip()
 
     embed = discord.Embed(
         title=title,
         url=comment_url or None,
-        description=f"**{row['author_name']}**\n\n{row['body']}",
+        description=f"**{row_value(row, 'author_name', 'Unknown User')}**\n\n{row_value(row, 'body', '')}",
         color=0xF16436
     )
-    embed.set_footer(text=f"ID: {short_comment_id(row['id'])}")
+    embed.set_footer(text=f"ID: {short_comment_id(row_value(row, 'id', 'unknown'))}")
     return embed
 
 class CommentView(discord.ui.View):
@@ -208,7 +229,7 @@ class CommentView(discord.ui.View):
             return await deny(interaction)
 
         row = get_comment(self.comment_id)
-        if not row or row["status"] == "archived":
+        if not row or row_value(row, "status", "new") == "archived":
             return await interaction.response.send_message("This comment is no longer active.", ephemeral=True)
 
         db.execute(
@@ -224,10 +245,10 @@ class CommentView(discord.ui.View):
             return await deny(interaction)
 
         row = get_comment(self.comment_id)
-        if not row or row["status"] == "archived":
+        if not row or row_value(row, "status", "new") == "archived":
             return await interaction.response.send_message("This comment is no longer active.", ephemeral=True)
 
-        if row["status"] == "done_pending":
+        if row_value(row, "status", "new") == "done_pending":
             restore = row["previous_status"] or "new"
             db.execute(
                 "UPDATE comments SET status=?, previous_status=NULL, done_deadline=NULL WHERE id=?",
@@ -238,7 +259,7 @@ class CommentView(discord.ui.View):
             await interaction.response.edit_message(embed=make_embed(row), view=CommentView(self.comment_id))
             return
 
-        previous = row["status"]
+        previous = row_value(row, "status", "new")
         deadline = int(time.time()) + DONE_DELAY_SECONDS
         db.execute(
             "UPDATE comments SET status='done_pending', previous_status=?, done_deadline=? WHERE id=?",
@@ -255,10 +276,10 @@ class CommentView(discord.ui.View):
 async def done_countdown(comment_id, message_id):
     while True:
         row = get_comment(comment_id)
-        if not row or row["status"] != "done_pending" or not row["done_deadline"]:
+        if not row or row_value(row, "status", "new") != "done_pending" or not row_value(row, "done_deadline"):
             return
 
-        remaining = row["done_deadline"] - int(time.time())
+        remaining = row_value(row, "done_deadline") - int(time.time())
         if remaining <= 0:
             await archive_comment(comment_id)
             return
@@ -287,16 +308,16 @@ def set_meta(key, value):
 
 def archive_entry(row):
     return {
-        "comment_id": row["id"],
-        "public_id": short_comment_id(row["id"]),
-        "project_name": row["project_name"],
-        "project_type": row["project_type"] or "PROJECT",
-        "author_name": row["author_name"],
-        "body": row["body"],
-        "source_url": row["source_url"] or "",
-        "project_url": row["project_url"] or "",
-        "comment_url": row["comment_url"] or "",
-        "created_at": row["created_at"] or "",
+        "comment_id": row_value(row, "id", ""),
+        "public_id": short_comment_id(row_value(row, "id", "unknown")),
+        "project_name": row_value(row, "project_name", "Unknown Project"),
+        "project_type": row_value(row, "project_type", "PROJECT"),
+        "author_name": row_value(row, "author_name", "Unknown User"),
+        "body": row_value(row, "body", ""),
+        "source_url": row_value(row, "source_url", ""),
+        "project_url": row_value(row, "project_url", ""),
+        "comment_url": row_value(row, "comment_url", ""),
+        "created_at": row_value(row, "created_at", ""),
         "status": "archived"
     }
 
@@ -384,15 +405,15 @@ async def update_archive_message(row):
 
 async def archive_comment(comment_id):
     row = get_comment(comment_id)
-    if not row or row["status"] != "done_pending":
+    if not row or row_value(row, "status", "new") != "done_pending":
         return
 
     await update_archive_message(row)
 
-    if row["discord_message_id"]:
+    if row_value(row, "discord_message_id"):
         try:
             main = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
-            msg = await main.fetch_message(row["discord_message_id"])
+            msg = await main.fetch_message(row_value(row, "discord_message_id"))
             await msg.delete()
         except discord.NotFound:
             pass
@@ -406,7 +427,7 @@ async def archive_comment(comment_id):
 async def publish_comment(comment: CommentRecord):
     existing = get_comment(comment.id)
     if existing:
-        return existing["discord_message_id"]
+        return row_value(existing, "discord_message_id")
 
     db.execute(
         """INSERT INTO comments
@@ -596,7 +617,7 @@ async def poll_curseforge_comments_once():
 
 
 async def active_discord_message_exists(row):
-    message_id = row["discord_message_id"]
+    message_id = row_value(row, "discord_message_id")
     if not message_id:
         return False
     try:
@@ -637,7 +658,7 @@ async def import_existing_comments_once():
             if existing:
                 # DONE/archived comments intentionally stay archived even if no public
                 # Discord message exists anymore.
-                if existing["status"] == "archived":
+                if row_value(existing, "status", "new") == "archived":
                     skipped_existing += 1
                     mark_cf_comment_seen(cid, project["id"])
                     continue
@@ -720,22 +741,22 @@ async def on_ready():
     channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
     for row in rows:
         remaining = None
-        if row["status"] == "done_pending" and row["done_deadline"]:
-            remaining = max(0, row["done_deadline"] - int(time.time()))
+        if row_value(row, "status", "new") == "done_pending" and row_value(row, "done_deadline"):
+            remaining = max(0, row_value(row, "done_deadline") - int(time.time()))
 
-        view = CommentView(row["id"], remaining)
-        bot.add_view(view, message_id=row["discord_message_id"])
+        view = CommentView(row_value(row, "id", "unknown"), remaining)
+        bot.add_view(view, message_id=row_value(row, "discord_message_id"))
 
         try:
-            message = await channel.fetch_message(int(row["discord_message_id"]))
+            message = await channel.fetch_message(int(row_value(row, "discord_message_id")))
             await message.edit(embed=make_embed(row), view=view)
         except discord.NotFound:
             pass
         except Exception as exc:
             print(f"[WARN] Could not refresh Discord message {row['discord_message_id']}: {exc}")
 
-        if row["status"] == "done_pending":
-            asyncio.create_task(done_countdown(row["id"], row["discord_message_id"]))
+        if row_value(row, "status", "new") == "done_pending":
+            asyncio.create_task(done_countdown(row_value(row, "id", "unknown"), row_value(row, "discord_message_id")))
 
 def interaction_allowed(interaction: discord.Interaction) -> bool:
     if interaction.user.id in ALLOWED_USER_IDS:
