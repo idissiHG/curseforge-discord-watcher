@@ -274,8 +274,9 @@ def build_embeds(projects, state, now):
 
     berlin_now = now.astimezone(ZoneInfo("Europe/Berlin"))
     summary_line = (
-        f"**Total Downloads** : {fmt_downloads(total_downloads)}"
-        f"  **•  Last Update: {berlin_now.strftime('%H:%M')}**"
+        f"**Total Projects**: {len(projects_sorted)}"
+        f" **• Total Downloads**: {fmt_downloads(total_downloads)}"
+        f" **• Last Update:** {berlin_now.strftime('%H:%M')}"
     )
 
     body = "\n\n".join(sections) if sections else "No projects found."
@@ -294,12 +295,8 @@ def build_embeds(projects, state, now):
         chunks.append(current)
 
     embeds = []
-    for i, chunk in enumerate(chunks):
-        title = f"📦 My CurseForge Projects ({len(projects_sorted)})"
-        if len(chunks) > 1:
-            title += f" • {i+1}/{len(chunks)}"
+    for chunk in chunks:
         embeds.append({
-            "title": title,
             "description": chunk,
             "color": 0xF16436
         })
