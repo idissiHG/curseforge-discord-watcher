@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import json
+import hashlib
 import os
 import sqlite3
 import time
@@ -47,6 +48,7 @@ db.executescript("""
 CREATE TABLE IF NOT EXISTS comments (
     id TEXT PRIMARY KEY,
     project_name TEXT NOT NULL,
+    project_type TEXT NOT NULL DEFAULT 'PROJECT',
     author_name TEXT NOT NULL,
     body TEXT NOT NULL,
     source_url TEXT,
@@ -63,11 +65,18 @@ CREATE TABLE IF NOT EXISTS bot_meta (
 """)
 db.commit()
 
+try:
+    db.execute("ALTER TABLE comments ADD COLUMN project_type TEXT NOT NULL DEFAULT 'PROJECT'")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+
 @dataclass
 class CommentRecord:
     id: str
     project_name: str
     author_name: str
+    project_type: str = "PROJECT"
     body: str
     source_url: str = ""
     created_at: str = ""
@@ -92,25 +101,33 @@ async def deny(interaction: discord.Interaction):
 def get_comment(comment_id):
     return db.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
 
-def status_prefix(status):
-    if status == "new":
-        return "🆕 "
-    if status == "progress":
-        return "🟡 **In Progress** • "
-    if status == "done_pending":
-        return "⏳ **Done Pending** • "
-    return ""
+def short_comment_id(comment_id):
+    digest = hashlib.sha1(str(comment_id).encode("utf-8")).hexdigest()[:8].upper()
+    return f"CF-{digest}"
+
+def status_text(status):
+    return {
+        "new": "NEW",
+        "progress": "IN PROGRESS",
+        "done_pending": "DONE PENDING",
+        "archived": "DONE"
+    }.get(status, str(status).upper())
+
+def display_date(row):
+    value = (row["created_at"] or "").strip()
+    return value or "Unknown date"
 
 def make_embed(row):
+    project_type = (row["project_type"] or "PROJECT").upper()
+    title = f"{project_type} {row['project_name']} - {display_date(row)} - {status_text(row['status'])}"
     embed = discord.Embed(
-        description=f"{status_prefix(row['status'])}**{row['project_name']}**\n\n{row['body']}",
+        title=title,
+        description=f"**{row['author_name']}**\n\n{row['body']}",
         color=0xF16436
     )
-    embed.add_field(name="Author", value=row["author_name"], inline=True)
-    if row["created_at"]:
-        embed.add_field(name="Posted", value=row["created_at"], inline=True)
     if row["source_url"]:
         embed.add_field(name="CurseForge", value=f"[Open comment]({row['source_url']})", inline=False)
+    embed.set_footer(text=f"ID: {short_comment_id(row['id'])}")
     return embed
 
 class CommentView(discord.ui.View):
@@ -218,20 +235,44 @@ def set_meta(key, value):
     db.commit()
 
 def archive_entry(row):
-    title = f"✅ {row['project_name']} • {row['author_name']}"
-    details = row["body"].replace("||", "")
-    if row["created_at"]:
-        details += f"\n\nPosted: {row['created_at']}"
-    if row["source_url"]:
-        details += f"\n{row['source_url']}"
-    return f"**{title}**\n{details}"
+    return {
+        "comment_id": row["id"],
+        "public_id": short_comment_id(row["id"]),
+        "project_name": row["project_name"],
+        "project_type": row["project_type"] or "PROJECT",
+        "author_name": row["author_name"],
+        "body": row["body"],
+        "source_url": row["source_url"] or "",
+        "created_at": row["created_at"] or "",
+        "status": "archived"
+    }
 
 def get_archive_entries():
     entries_raw = get_meta("archive_entries") or "[]"
     try:
-        return json.loads(entries_raw)
+        entries = json.loads(entries_raw)
+        return entries if isinstance(entries, list) else []
     except Exception:
         return []
+
+def archive_embed(entry):
+    if isinstance(entry, str):
+        return discord.Embed(description=entry, color=0xF16436)
+
+    title = (
+        f"{str(entry.get('project_type') or 'PROJECT').upper()} "
+        f"{entry.get('project_name') or 'Unknown Project'} - "
+        f"{entry.get('created_at') or 'Unknown date'} - DONE"
+    )
+    embed = discord.Embed(
+        title=title,
+        description=f"**{entry.get('author_name') or 'Unknown User'}**\n\n{entry.get('body') or ''}",
+        color=0xF16436
+    )
+    if entry.get("source_url"):
+        embed.add_field(name="CurseForge", value=f"[Open comment]({entry['source_url']})", inline=False)
+    embed.set_footer(text=f"ID: {entry.get('public_id') or 'Unknown'}")
+    return embed
 
 class ArchiveView(discord.ui.View):
     def __init__(self):
@@ -248,13 +289,16 @@ class ArchiveView(discord.ui.View):
 
         entries = get_archive_entries()
         if not entries:
-            text = "🗃️ Das Archiv ist aktuell leer."
-        else:
-            text = "## 🗃️ ARCHIV\n\n" + "\n\n".join(entries)
-            if len(text) > 1900:
-                text = text[-1900:]
+            return await interaction.response.send_message("🗃️ Das Archiv ist aktuell leer.", ephemeral=True)
 
-        await interaction.response.send_message(text, ephemeral=True)
+        embeds = [archive_embed(entry) for entry in entries[-25:]]
+        await interaction.response.send_message(
+            content=f"🗃️ **ARCHIV** • {len(entries)} Einträge",
+            embeds=embeds[:10],
+            ephemeral=True
+        )
+        for i in range(10, len(embeds), 10):
+            await interaction.followup.send(embeds=embeds[i:i+10], ephemeral=True)
 
 async def ensure_archive_message():
     channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
@@ -275,11 +319,8 @@ async def ensure_archive_message():
 async def update_archive_message(row):
     entries = get_archive_entries()
     entries.append(archive_entry(row))
-
-    # Keep newest archive entries if storage grows too large.
-    while entries and len(json.dumps(entries, ensure_ascii=False)) > 12000:
-        entries.pop(0)
-
+    if len(entries) > 250:
+        entries = entries[-250:]
     set_meta("archive_entries", json.dumps(entries, ensure_ascii=False))
     await ensure_archive_message()
 
@@ -311,9 +352,9 @@ async def publish_comment(comment: CommentRecord):
 
     db.execute(
         """INSERT INTO comments
-        (id, project_name, author_name, body, source_url, created_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'new')""",
-        (comment.id, comment.project_name, comment.author_name, comment.body, comment.source_url, comment.created_at)
+        (id, project_name, project_type, author_name, body, source_url, created_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'new')""",
+        (comment.id, comment.project_name, comment.project_type, comment.author_name, comment.body, comment.source_url, comment.created_at)
     )
     db.commit()
 
@@ -360,10 +401,45 @@ async def comment_test(ctx):
         id=test_id,
         project_name="CurseForge Comment Test",
         author_name=ctx.author.display_name,
+        project_type="MOD",
         body="This is a test comment for the In Progress / Done workflow.",
         source_url="",
         created_at="Test"
     ))
+
+@bot.command(name="archive_delete")
+async def archive_delete(ctx, public_id: str = ""):
+    allowed = (
+        ctx.author.id in ALLOWED_USER_IDS or
+        any(
+            role.id in ALLOWED_ROLE_IDS or role.name.lower() in ALLOWED_ROLE_NAMES
+            for role in getattr(ctx.author, "roles", [])
+        )
+    )
+    if not allowed:
+        return
+
+    target = public_id.strip().upper()
+    if not target:
+        await ctx.reply("Usage: !archive_delete CF-XXXXXXXX")
+        return
+
+    entries = get_archive_entries()
+    kept = []
+    removed = False
+
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get("public_id", "")).upper() == target:
+            removed = True
+            continue
+        kept.append(entry)
+
+    if not removed:
+        await ctx.reply(f"Archive ID {target} not found.")
+        return
+
+    set_meta("archive_entries", json.dumps(kept, ensure_ascii=False))
+    await ctx.reply(f"✅ {target} was removed from the archive.")
 
 if __name__ == "__main__":
     if not TOKEN:
