@@ -29,11 +29,16 @@
       "first_seen": "2026-10-03T11:49:58.959670Z",
       "baseline": true,
       "name": "GuideME - Unofficial Port"
+    },
+    "1714863": {
+      "first_seen": "2026-10-03T12:14:16.397734Z",
+      "baseline": false,
+      "name": "DyssiCore NF"
     }
   },
   "author_id": 132410565,
   "author_name": "IDiSSi",
   "initialized": true,
-  "last_check_utc": "2026-10-03T12:11:17.406099Z",
+  "last_check_utc": "2026-10-03T12:14:16.397734Z",
   "discord_message_id": "1555912703468380211"
 }
