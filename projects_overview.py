@@ -228,21 +228,20 @@ def build_embeds(projects, state, now):
         if latest:
             mc_versions = file_minecraft_versions(latest)
             loader = file_loader(latest)
-            release_version = file_version_label(latest)
+            configured_modloader_version = mod.get("_configured_modloader_version", "")
 
             info_parts = []
             if mc_versions:
                 info_parts.append("Minecraft " + ", ".join(mc_versions))
             if loader:
                 info_parts.append(loader)
+            if configured_modloader_version:
+                info_parts.append("Modloader Version " + configured_modloader_version)
 
             if kind == "MODPACK":
                 count = modpack_mod_count(latest)
                 if count is not None:
                     info_parts.append(f"{count} Mods")
-
-            if release_version:
-                info_parts.append("Version " + release_version)
 
             info_line = " • ".join(info_parts) if info_parts else "Release information unavailable"
         else:
@@ -358,7 +357,12 @@ def main():
         except Exception as e:
             print(f"[WARN] Could not load configured project {mod_id}: {e}")
 
+    config_by_id = {str(p.get("mod_id")): p for p in configured}
     projects = list(by_id.values())
+    for mod in projects:
+        configured_project = config_by_id.get(str(mod.get("id")), {})
+        if configured_project.get("modloader_version"):
+            mod["_configured_modloader_version"] = configured_project["modloader_version"]
 
     current_ids = {str(p.get("id")) for p in projects}
     initialized = bool(state.get("initialized"))
