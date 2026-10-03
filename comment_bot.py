@@ -843,7 +843,8 @@ def fetch_project_overview_data():
             print(f"[WARN] Overview fetch failed for {project.get('name')} ({project.get('id')}): {exc}")
     return list(by_id.values())
 
-def build_project_overview_embed(projects):
+def build_project_overview_embed(projects, previous_downloads=None):
+    previous_downloads = previous_downloads or {}
     modpacks = []
     mods = []
     others = []
@@ -865,6 +866,9 @@ def build_project_overview_embed(projects):
         url = ((mod.get("links") or {}).get("websiteUrl") or "https://www.curseforge.com/")
         downloads = int(mod.get("downloadCount") or 0)
         total_downloads += downloads
+        previous = previous_downloads.get(str(mid))
+        delta = downloads - int(previous) if previous is not None else 0
+        delta_text = f" **(+{delta})**" if delta > 0 else ""
         kind = cf_project_class(mod)
         latest = cf_latest_file(mod)
 
@@ -897,7 +901,7 @@ def build_project_overview_embed(projects):
         else:
             info_line = "No release yet"
 
-        entry = f"**[{name}]({url})**\n*{info_line}*\n**{cf_fmt_downloads(downloads)}** downloads"
+        entry = f"**[{name}]({url})**\n*{info_line}*\n**{cf_fmt_downloads(downloads)}** downloads{delta_text}"
 
         if kind == "MODPACK":
             modpacks.append(entry)
@@ -931,7 +935,19 @@ async def update_project_overview_once():
     if not PROJECTS_CHANNEL_ID:
         return
     projects = await asyncio.to_thread(fetch_project_overview_data)
-    embed = build_project_overview_embed(projects)
+    try:
+        previous_downloads = json.loads(get_meta("projects_download_counts") or "{}")
+        if not isinstance(previous_downloads, dict):
+            previous_downloads = {}
+    except Exception:
+        previous_downloads = {}
+
+    embed = build_project_overview_embed(projects, previous_downloads)
+    current_downloads = {
+        str(int(mod.get("id") or 0)): int(mod.get("downloadCount") or 0)
+        for mod in projects
+        if mod.get("id") is not None
+    }
     channel = bot.get_channel(PROJECTS_CHANNEL_ID) or await bot.fetch_channel(PROJECTS_CHANNEL_ID)
 
     message_id = get_meta("projects_overview_message_id")
@@ -939,6 +955,7 @@ async def update_project_overview_once():
         try:
             msg = await channel.fetch_message(int(message_id))
             await msg.edit(embed=embed)
+            set_meta("projects_download_counts", json.dumps(current_downloads))
             print(f"[OK] Updated project overview message {message_id}.")
             return
         except discord.NotFound:
@@ -948,6 +965,7 @@ async def update_project_overview_once():
 
     msg = await channel.send(embed=embed)
     set_meta("projects_overview_message_id", msg.id)
+    set_meta("projects_download_counts", json.dumps(current_downloads))
     print(f"[OK] Created project overview message {msg.id}.")
 
 @tasks.loop(seconds=PROJECTS_REFRESH_SECONDS)
