@@ -8,10 +8,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from urllib.request import Request, urlopen
+from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 
 import discord
 from dotenv import load_dotenv
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 
 load_dotenv()
@@ -20,6 +23,23 @@ TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 MAIN_CHANNEL_ID = int(os.environ.get("DISCORD_COMMENTS_CHANNEL_ID", "0") or 0)
 GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID", "279789363825737728") or 0)
 GUILD_OBJ = discord.Object(id=GUILD_ID) if GUILD_ID else None
+CF_API_KEY = os.environ.get("CURSEFORGE_API_KEY", "").strip()
+COMMENT_POLL_SECONDS = int(os.environ.get("COMMENT_POLL_SECONDS", "60") or 60)
+IGNORE_CF_AUTHORS = {
+    x.strip().lower()
+    for x in os.environ.get("COMMENT_IGNORE_AUTHOR_NAMES", "IDiSSi").split(",")
+    if x.strip()
+}
+
+KNOWN_PROJECTS = [
+    {"id": 1716068, "name": "Applied Energistics 2 - Unofficial Port", "type": "MOD", "url": "https://www.curseforge.com/minecraft/mc-mods/applied-energistics-2-unofficial-port"},
+    {"id": 1381868, "name": "DyssiCore", "type": "MODPACK", "url": "https://www.curseforge.com/minecraft/modpacks/dyssicore"},
+    {"id": 1714863, "name": "DyssiCore NF", "type": "MODPACK", "url": "https://www.curseforge.com/minecraft/modpacks/dyssicore-nf"},
+    {"id": 1716091, "name": "FramedBlocks - Unofficial Port", "type": "MOD", "url": "https://www.curseforge.com/minecraft/mc-mods/framedblocks-unofficial-port"},
+    {"id": 1716016, "name": "GuideME - Unofficial Port", "type": "MOD", "url": "https://www.curseforge.com/minecraft/mc-mods/guideme-unofficial-port"},
+    {"id": 1718239, "name": "Mantle - Unofficial Community Port", "type": "MOD", "url": "https://www.curseforge.com/minecraft/mc-mods/mantle-unofficial-community-port"},
+    {"id": 1716123, "name": "PamTreeWood - Expanded", "type": "MOD", "url": "https://www.curseforge.com/minecraft/mc-mods/pamtreewood-expanded"},
+]
 
 def parse_ids(name):
     raw = os.environ.get(name, "")
@@ -67,6 +87,11 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE TABLE IF NOT EXISTS bot_meta (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+CREATE TABLE IF NOT EXISTS seen_cf_comments (
+    comment_id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    seen_at INTEGER NOT NULL
 );
 """)
 db.commit()
@@ -392,12 +417,196 @@ async def publish_comment(comment: CommentRecord):
     db.commit()
     return message.id
 
+
+def http_json(url, headers=None):
+    req_headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; IDiSSi-CF-Bot/1.0)"
+    }
+    if headers:
+        req_headers.update(headers)
+    req = Request(url, headers=req_headers)
+    with urlopen(req, timeout=30) as res:
+        raw = res.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+def cf_api_get(path, params=None):
+    if not CF_API_KEY:
+        return {}
+    url = "https://api.curseforge.com/v1" + path
+    if params:
+        url += "?" + urlencode(params)
+    return http_json(url, {"x-api-key": CF_API_KEY})
+
+def project_kind_from_url(url):
+    u = (url or "").lower()
+    if "/modpacks/" in u:
+        return "MODPACK"
+    if "/mc-mods/" in u:
+        return "MOD"
+    return "PROJECT"
+
+def discover_comment_projects():
+    projects = {int(p["id"]): dict(p) for p in KNOWN_PROJECTS}
+
+    if not CF_API_KEY:
+        return list(projects.values())
+
+    try:
+        author_candidates = {}
+        for p in KNOWN_PROJECTS[:3]:
+            data = cf_api_get(f"/mods/{p['id']}").get("data") or {}
+            for author in data.get("authors") or []:
+                aid = author.get("id")
+                if isinstance(aid, int):
+                    author_candidates[aid] = author.get("name") or str(aid)
+
+        best = None
+        for aid, name in author_candidates.items():
+            result = cf_api_get("/mods/search", {
+                "gameId": 432,
+                "primaryAuthorId": aid,
+                "pageSize": 50,
+                "index": 0
+            }).get("data") or []
+            overlap = len(set(projects) & {int(m["id"]) for m in result if m.get("id") is not None})
+            score = (overlap, len(result))
+            if best is None or score > best[0]:
+                best = (score, result)
+
+        if best and best[0][0] > 0:
+            for mod in best[1]:
+                mid = int(mod["id"])
+                url = ((mod.get("links") or {}).get("websiteUrl") or "").strip()
+                projects[mid] = {
+                    "id": mid,
+                    "name": mod.get("name") or f"Project {mid}",
+                    "type": project_kind_from_url(url),
+                    "url": url or projects.get(mid, {}).get("url", "")
+                }
+    except Exception as exc:
+        print(f"[WARN] Project discovery failed; using known projects: {exc}")
+
+    return list(projects.values())
+
+def fetch_cf_comments(project_id):
+    url = f"https://www.curseforge.com/api/v1/mods/{int(project_id)}/comments?page=0&size=20"
+    return http_json(url).get("data") or []
+
+def flatten_cf_comments(items):
+    flat = []
+    for item in items:
+        flat.append(item)
+        for reply in item.get("replies") or []:
+            flat.append(reply)
+    return flat
+
+def cf_comment_author_name(item):
+    author = item.get("author") or {}
+    return (author.get("displayName") or author.get("username") or "Unknown User").strip()
+
+def cf_comment_is_own(item):
+    author = item.get("author") or {}
+    names = {
+        str(author.get("displayName") or "").strip().lower(),
+        str(author.get("username") or "").strip().lower()
+    }
+    names.discard("")
+    return bool(names & IGNORE_CF_AUTHORS)
+
+def cf_comment_date(ms):
+    try:
+        dt = datetime.fromtimestamp(int(ms) / 1000, tz=ZoneInfo("UTC"))
+        return dt.astimezone(ZoneInfo("Europe/Berlin")).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return ""
+
+def seen_cf_comment(comment_id):
+    return db.execute(
+        "SELECT 1 FROM seen_cf_comments WHERE comment_id=?",
+        (int(comment_id),)
+    ).fetchone() is not None
+
+def mark_cf_comment_seen(comment_id, project_id):
+    db.execute(
+        "INSERT OR IGNORE INTO seen_cf_comments(comment_id, project_id, seen_at) VALUES(?,?,?)",
+        (int(comment_id), int(project_id), int(time.time()))
+    )
+    db.commit()
+
+async def poll_curseforge_comments_once():
+    projects = await asyncio.to_thread(discover_comment_projects)
+    baseline = get_meta("cf_comments_initialized") != "1"
+    found = 0
+
+    for project in projects:
+        try:
+            comments = await asyncio.to_thread(fetch_cf_comments, project["id"])
+        except Exception as exc:
+            print(f"[WARN] Comment fetch failed for {project['name']} ({project['id']}): {exc}")
+            continue
+
+        for item in sorted(flatten_cf_comments(comments), key=lambda x: int(x.get("datePosted") or 0)):
+            cid = item.get("id")
+            if not isinstance(cid, int):
+                continue
+
+            if seen_cf_comment(cid):
+                continue
+
+            mark_cf_comment_seen(cid, project["id"])
+
+            if cf_comment_is_own(item):
+                continue
+
+            if baseline:
+                continue
+
+            body = (item.get("text") or "").strip()
+            if not body:
+                continue
+
+            project_url = (project.get("url") or "").rstrip("/")
+            comments_url = project_url + "/comments" if project_url else ""
+
+            await publish_comment(CommentRecord(
+                id=f"cf:{project['id']}:{cid}",
+                project_name=project.get("name") or f"Project {project['id']}",
+                author_name=cf_comment_author_name(item),
+                body=body,
+                project_type=project.get("type") or "PROJECT",
+                project_url=project_url,
+                comment_url=comments_url,
+                created_at=cf_comment_date(item.get("datePosted"))
+            ))
+            found += 1
+
+    if baseline:
+        set_meta("cf_comments_initialized", "1")
+        print(f"[INIT] CurseForge comments baselined for {len(projects)} projects.")
+    elif found:
+        print(f"[NEW] Posted {found} new CurseForge comment(s) to Discord.")
+
+@tasks.loop(seconds=COMMENT_POLL_SECONDS)
+async def curseforge_comment_poller():
+    try:
+        await poll_curseforge_comments_once()
+    except Exception as exc:
+        print(f"[WARN] CurseForge comment poll failed: {exc}")
+
+@curseforge_comment_poller.before_loop
+async def before_curseforge_comment_poller():
+    await bot.wait_until_ready()
+
 @bot.event
 async def on_ready():
     print(f"[OK] Logged in as {bot.user} ({bot.user.id})")
 
     bot.add_view(ArchiveView())
     await ensure_archive_message()
+
+    if not curseforge_comment_poller.is_running():
+        curseforge_comment_poller.start()
 
     try:
         if GUILD_ID and GUILD_OBJ:
@@ -503,6 +712,22 @@ async def slash_archive_delete(interaction: discord.Interaction, public_id: str)
         f"✅ `{target}` was removed from the archive.",
         ephemeral=True
     )
+
+
+@bot.tree.command(name="comments_check", description="Check CurseForge comments now")
+@app_commands.guilds(GUILD_OBJ)
+async def slash_comments_check(interaction: discord.Interaction):
+    if not interaction_allowed(interaction):
+        return await interaction.response.send_message(
+            "You don't have permission to manage CurseForge comments.",
+            ephemeral=True
+        )
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await poll_curseforge_comments_once()
+        await interaction.followup.send("✅ CurseForge comments checked.", ephemeral=True)
+    except Exception as exc:
+        await interaction.followup.send(f"❌ Comment check failed: {exc}", ephemeral=True)
 
 if __name__ == "__main__":
     if not TOKEN:
