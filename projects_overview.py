@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -127,9 +128,41 @@ def fmt_downloads(value):
         return "0"
 
 def class_label(mod):
-    # Minecraft class IDs commonly represent mods/modpacks, but project name/link
-    # is more important than the numeric class. Keep the UI neutral.
-    return "Project"
+    url = ((mod.get("links") or {}).get("websiteUrl") or "").lower()
+    if "/modpacks/" in url:
+        return "MODPACK"
+    if "/mc-mods/" in url:
+        return "MOD"
+    return "PROJECT"
+
+def latest_file(mod):
+    files = mod.get("latestFiles") or []
+    if not files:
+        return None
+    return max(files, key=lambda f: (f.get("fileDate", ""), int(f.get("id", 0))))
+
+def file_loader(file_info):
+    if not file_info:
+        return ""
+    versions = [str(v) for v in (file_info.get("gameVersions") or [])]
+    for loader in ["NeoForge", "Forge", "Fabric", "Quilt"]:
+        if any(v.lower() == loader.lower() for v in versions):
+            return loader
+    return ""
+
+def file_minecraft_versions(file_info):
+    if not file_info:
+        return []
+    versions = [str(v) for v in (file_info.get("gameVersions") or [])]
+    excluded = {"neoforge", "forge", "fabric", "quilt", "java"}
+    candidates = [v for v in versions if v.lower() not in excluded]
+    likely = [v for v in candidates if re.match(r"^\d+(\.\d+){1,3}([\-+].*)?$", v)]
+    return likely[:3] if likely else candidates[:3]
+
+def file_version_label(file_info):
+    if not file_info:
+        return ""
+    return file_info.get("displayName") or file_info.get("fileName") or ""
 
 def build_embeds(projects, state, now):
     projects_sorted = sorted(projects, key=lambda m: (m.get("name") or "").lower())
@@ -152,8 +185,30 @@ def build_embeds(projects, state, now):
                 pass
 
         prefix = "🆕 **NEW** • " if is_new else ""
+        kind = class_label(mod)
+        kind_icon = "🧩" if kind == "MOD" else ("📦" if kind == "MODPACK" else "🔹")
+
+        latest = latest_file(mod)
+        if latest:
+            mc_versions = file_minecraft_versions(latest)
+            loader = file_loader(latest)
+            release_version = file_version_label(latest)
+
+            info_parts = []
+            if mc_versions:
+                info_parts.append("Minecraft " + ", ".join(mc_versions))
+            if loader:
+                info_parts.append(loader)
+            if release_version:
+                info_parts.append("Version " + release_version)
+
+            info_line = " • ".join(info_parts) if info_parts else "Release information unavailable"
+        else:
+            info_line = "No release yet"
+
         lines.append(
-            f"{prefix}**[{name}]({url})**\n"
+            f"{prefix}{kind_icon} **{kind}** • **[{name}]({url})**\n"
+            f"*{info_line}*\n"
             f"⬇️ **{fmt_downloads(downloads)}** downloads"
         )
 
