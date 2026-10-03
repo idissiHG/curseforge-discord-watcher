@@ -19,6 +19,7 @@ load_dotenv()
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 MAIN_CHANNEL_ID = int(os.environ.get("DISCORD_COMMENTS_CHANNEL_ID", "0") or 0)
 GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID", "279789363825737728") or 0)
+GUILD_OBJ = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 def parse_ids(name):
     raw = os.environ.get(name, "")
@@ -399,18 +400,15 @@ async def on_ready():
     await ensure_archive_message()
 
     try:
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-
-            # Copy the locally defined commands to this server and sync them immediately.
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"[OK] Synced {len(synced)} slash commands to guild {GUILD_ID}")
-
-            # Remove older globally registered copies so Discord does not show duplicates.
+        if GUILD_ID and GUILD_OBJ:
+            # Remove any old global registrations from Discord.
             bot.tree.clear_commands(guild=None)
-            cleared = await bot.tree.sync()
-            print(f"[OK] Cleared global slash commands ({len(cleared)} remaining)")
+            cleared_global = await bot.tree.sync()
+            print(f"[OK] Cleared global slash commands ({len(cleared_global)} remaining)")
+
+            # Sync only the guild-specific commands.
+            synced = await bot.tree.sync(guild=GUILD_OBJ)
+            print(f"[OK] Synced {len(synced)} guild-only slash commands to {GUILD_ID}")
         else:
             synced = await bot.tree.sync()
             print(f"[OK] Synced {len(synced)} global slash commands")
@@ -440,6 +438,7 @@ def interaction_allowed(interaction: discord.Interaction) -> bool:
     )
 
 @bot.tree.command(name="comment_test", description="Create a test CurseForge comment")
+@app_commands.guilds(GUILD_OBJ)
 async def slash_comment_test(interaction: discord.Interaction):
     if not interaction_allowed(interaction):
         return await interaction.response.send_message(
@@ -460,6 +459,7 @@ async def slash_comment_test(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Test comment created.", ephemeral=True)
 
 @bot.tree.command(name="archive_clear", description="Clear all archived CurseForge comments")
+@app_commands.guilds(GUILD_OBJ)
 async def slash_archive_clear(interaction: discord.Interaction):
     if not interaction_allowed(interaction):
         return await interaction.response.send_message(
@@ -472,6 +472,7 @@ async def slash_archive_clear(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Archive cleared.", ephemeral=True)
 
 @bot.tree.command(name="archive_delete", description="Delete one archived CurseForge comment by ID")
+@app_commands.guilds(GUILD_OBJ)
 @app_commands.describe(public_id="Archive ID, e.g. CF-7A3F91C2")
 async def slash_archive_delete(interaction: discord.Interaction, public_id: str):
     if not interaction_allowed(interaction):
