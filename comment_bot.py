@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS comments (
     author_name TEXT NOT NULL,
     body TEXT NOT NULL,
     source_url TEXT,
+    project_url TEXT,
+    comment_url TEXT,
     created_at TEXT,
     discord_message_id INTEGER,
     status TEXT NOT NULL DEFAULT 'new',
@@ -74,6 +76,16 @@ try:
 except sqlite3.OperationalError:
     pass
 
+for column_sql in (
+    "ALTER TABLE comments ADD COLUMN project_url TEXT",
+    "ALTER TABLE comments ADD COLUMN comment_url TEXT",
+):
+    try:
+        db.execute(column_sql)
+        db.commit()
+    except sqlite3.OperationalError:
+        pass
+
 @dataclass
 class CommentRecord:
     id: str
@@ -82,6 +94,8 @@ class CommentRecord:
     body: str
     project_type: str = "PROJECT"
     source_url: str = ""
+    project_url: str = ""
+    comment_url: str = ""
     created_at: str = ""
 
 def is_allowed(interaction: discord.Interaction) -> bool:
@@ -123,13 +137,17 @@ def display_date(row):
 def make_embed(row):
     project_type = (row["project_type"] or "PROJECT").upper()
     title = f"{project_type} {row['project_name']} - {display_date(row)} - {status_text(row['status'])}"
+    project_url = (row["project_url"] or "").strip()
+    comment_url = (row["comment_url"] or row["source_url"] or "").strip()
+
     embed = discord.Embed(
         title=title,
+        url=project_url or None,
         description=f"**{row['author_name']}**\n\n{row['body']}",
         color=0xF16436
     )
-    if row["source_url"]:
-        embed.add_field(name="CurseForge", value=f"[Open comment]({row['source_url']})", inline=False)
+    if comment_url:
+        embed.add_field(name="Comment", value=f"[Open Comment]({comment_url})", inline=False)
     embed.set_footer(text=f"ID: {short_comment_id(row['id'])}")
     return embed
 
@@ -246,6 +264,8 @@ def archive_entry(row):
         "author_name": row["author_name"],
         "body": row["body"],
         "source_url": row["source_url"] or "",
+        "project_url": row["project_url"] or "",
+        "comment_url": row["comment_url"] or "",
         "created_at": row["created_at"] or "",
         "status": "archived"
     }
@@ -267,13 +287,16 @@ def archive_embed(entry):
         f"{entry.get('project_name') or 'Unknown Project'} - "
         f"{entry.get('created_at') or 'Unknown date'} - DONE"
     )
+    project_url = (entry.get("project_url") or "").strip()
+    comment_url = (entry.get("comment_url") or entry.get("source_url") or "").strip()
     embed = discord.Embed(
         title=title,
+        url=project_url or None,
         description=f"**{entry.get('author_name') or 'Unknown User'}**\n\n{entry.get('body') or ''}",
         color=0xF16436
     )
-    if entry.get("source_url"):
-        embed.add_field(name="CurseForge", value=f"[Open comment]({entry['source_url']})", inline=False)
+    if comment_url:
+        embed.add_field(name="Comment", value=f"[Open Comment]({comment_url})", inline=False)
     embed.set_footer(text=f"ID: {entry.get('public_id') or 'Unknown'}")
     return embed
 
@@ -355,9 +378,9 @@ async def publish_comment(comment: CommentRecord):
 
     db.execute(
         """INSERT INTO comments
-        (id, project_name, project_type, author_name, body, source_url, created_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'new')""",
-        (comment.id, comment.project_name, comment.project_type, comment.author_name, comment.body, comment.source_url, comment.created_at)
+        (id, project_name, project_type, author_name, body, source_url, project_url, comment_url, created_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')""",
+        (comment.id, comment.project_name, comment.project_type, comment.author_name, comment.body, comment.source_url, comment.project_url, comment.comment_url, comment.created_at)
     )
     db.commit()
 
