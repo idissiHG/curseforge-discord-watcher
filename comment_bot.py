@@ -713,15 +713,27 @@ async def on_ready():
     except Exception as exc:
         print(f"[WARN] Slash command sync failed: {exc}")
 
-    # Restore persistent views and pending countdowns after a restart.
+    # Restore persistent views and refresh existing active comments after restart.
     rows = db.execute(
         "SELECT * FROM comments WHERE status IN ('new','progress','done_pending') AND discord_message_id IS NOT NULL"
     ).fetchall()
+    channel = bot.get_channel(MAIN_CHANNEL_ID) or await bot.fetch_channel(MAIN_CHANNEL_ID)
     for row in rows:
         remaining = None
         if row["status"] == "done_pending" and row["done_deadline"]:
             remaining = max(0, row["done_deadline"] - int(time.time()))
-        bot.add_view(CommentView(row["id"], remaining), message_id=row["discord_message_id"])
+
+        view = CommentView(row["id"], remaining)
+        bot.add_view(view, message_id=row["discord_message_id"])
+
+        try:
+            message = await channel.fetch_message(int(row["discord_message_id"]))
+            await message.edit(embed=make_embed(row), view=view)
+        except discord.NotFound:
+            pass
+        except Exception as exc:
+            print(f"[WARN] Could not refresh Discord message {row['discord_message_id']}: {exc}")
+
         if row["status"] == "done_pending":
             asyncio.create_task(done_countdown(row["id"], row["discord_message_id"]))
 
