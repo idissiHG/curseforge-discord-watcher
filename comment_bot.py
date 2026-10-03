@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import discord
 from dotenv import load_dotenv
 from discord.ext import commands
+from discord import app_commands
 
 load_dotenv()
 
@@ -40,7 +41,6 @@ DONE_DELAY_SECONDS = 60
 COUNTDOWN_STEP_SECONDS = 5
 
 intents = discord.Intents.default()
-intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 db = sqlite3.connect(DB_PATH)
@@ -374,6 +374,12 @@ async def on_ready():
     bot.add_view(ArchiveView())
     await ensure_archive_message()
 
+    try:
+        synced = await bot.tree.sync()
+        print(f"[OK] Synced {len(synced)} slash commands")
+    except Exception as exc:
+        print(f"[WARN] Slash command sync failed: {exc}")
+
     # Restore persistent views and pending countdowns after a restart.
     rows = db.execute(
         "SELECT * FROM comments WHERE status IN ('new','progress','done_pending') AND discord_message_id IS NOT NULL"
@@ -386,76 +392,58 @@ async def on_ready():
         if row["status"] == "done_pending":
             asyncio.create_task(done_countdown(row["id"], row["discord_message_id"]))
 
-async def private_command_reply(ctx, text):
-    try:
-        await ctx.author.send(text)
-    except Exception:
-        pass
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-
-@bot.command(name="comment_test")
-async def comment_test(ctx):
-    # Temporary setup/test helper. Only authorized users can create test comments.
-    fake_interaction_user_allowed = (
-        ctx.author.id in ALLOWED_USER_IDS or
-        any(
-            role.id in ALLOWED_ROLE_IDS or role.name.lower() in ALLOWED_ROLE_NAMES
-            for role in getattr(ctx.author, "roles", [])
-        )
+def interaction_allowed(interaction: discord.Interaction) -> bool:
+    if interaction.user.id in ALLOWED_USER_IDS:
+        return True
+    roles = getattr(interaction.user, "roles", [])
+    return any(
+        getattr(role, "id", 0) in ALLOWED_ROLE_IDS
+        or getattr(role, "name", "").lower() in ALLOWED_ROLE_NAMES
+        for role in roles
     )
-    if not fake_interaction_user_allowed:
-        return
+
+@bot.tree.command(name="comment_test", description="Create a test CurseForge comment")
+async def slash_comment_test(interaction: discord.Interaction):
+    if not interaction_allowed(interaction):
+        return await interaction.response.send_message(
+            "You don't have permission to manage CurseForge comments.",
+            ephemeral=True
+        )
+
     test_id = f"test-{int(time.time())}"
     await publish_comment(CommentRecord(
         id=test_id,
         project_name="CurseForge Comment Test",
-        author_name=ctx.author.display_name,
+        author_name=interaction.user.display_name,
         project_type="MOD",
         body="This is a test comment for the In Progress / Done workflow.",
         source_url="",
         created_at=datetime.now(ZoneInfo("Europe/Berlin")).strftime("%d.%m.%Y %H:%M")
     ))
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
+    await interaction.response.send_message("✅ Test comment created.", ephemeral=True)
 
-@bot.command(name="archive_clear")
-async def archive_clear(ctx):
-    allowed = (
-        ctx.author.id in ALLOWED_USER_IDS or
-        any(
-            role.id in ALLOWED_ROLE_IDS or role.name.lower() in ALLOWED_ROLE_NAMES
-            for role in getattr(ctx.author, "roles", [])
+@bot.tree.command(name="archive_clear", description="Clear all archived CurseForge comments")
+async def slash_archive_clear(interaction: discord.Interaction):
+    if not interaction_allowed(interaction):
+        return await interaction.response.send_message(
+            "You don't have permission to manage CurseForge comments.",
+            ephemeral=True
         )
-    )
-    if not allowed:
-        return
 
     set_meta("archive_entries", "[]")
     await ensure_archive_message()
-    await private_command_reply(ctx, "✅ Archive cleared.")
+    await interaction.response.send_message("✅ Archive cleared.", ephemeral=True)
 
-@bot.command(name="archive_delete")
-async def archive_delete(ctx, public_id: str = ""):
-    allowed = (
-        ctx.author.id in ALLOWED_USER_IDS or
-        any(
-            role.id in ALLOWED_ROLE_IDS or role.name.lower() in ALLOWED_ROLE_NAMES
-            for role in getattr(ctx.author, "roles", [])
+@bot.tree.command(name="archive_delete", description="Delete one archived CurseForge comment by ID")
+@app_commands.describe(public_id="Archive ID, e.g. CF-7A3F91C2")
+async def slash_archive_delete(interaction: discord.Interaction, public_id: str):
+    if not interaction_allowed(interaction):
+        return await interaction.response.send_message(
+            "You don't have permission to manage CurseForge comments.",
+            ephemeral=True
         )
-    )
-    if not allowed:
-        return
 
     target = public_id.strip().upper()
-    if not target:
-        await private_command_reply(ctx, "Usage: !archive_delete CF-XXXXXXXX")
-        return
-
     entries = get_archive_entries()
     kept = []
     removed = False
@@ -467,11 +455,16 @@ async def archive_delete(ctx, public_id: str = ""):
         kept.append(entry)
 
     if not removed:
-        await private_command_reply(ctx, f"Archive ID {target} not found.")
-        return
+        return await interaction.response.send_message(
+            f"Archive ID `{target}` not found.",
+            ephemeral=True
+        )
 
     set_meta("archive_entries", json.dumps(kept, ensure_ascii=False))
-    await private_command_reply(ctx, f"✅ {target} was removed from the archive.")
+    await interaction.response.send_message(
+        f"✅ `{target}` was removed from the archive.",
+        ephemeral=True
+    )
 
 if __name__ == "__main__":
     if not TOKEN:
