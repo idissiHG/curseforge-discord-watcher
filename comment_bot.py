@@ -7,7 +7,10 @@ import time
 from dataclasses import dataclass
 
 import discord
+from dotenv import load_dotenv
 from discord.ext import commands
+
+load_dotenv()
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 MAIN_CHANNEL_ID = int(os.environ.get("DISCORD_COMMENTS_CHANNEL_ID", "0") or 0)
