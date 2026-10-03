@@ -69,6 +69,9 @@ def cf_get(path, params=None):
 def get_mod(mod_id):
     return cf_get(f"/mods/{mod_id}").get("data", {})
 
+def get_file(mod_id, file_id):
+    return cf_get(f"/mods/{mod_id}/files/{file_id}").get("data", {})
+
 def search_owned_projects(author_id):
     params = {
         "gameId": MINECRAFT_GAME_ID,
@@ -166,13 +169,20 @@ def file_version_label(file_info):
         return ""
     return file_info.get("displayName") or file_info.get("fileName") or ""
 
-def modpack_mod_count(file_info):
+def modpack_manifest_info(mod_id, file_info):
     if not file_info:
-        return None
+        return {"mod_count": None, "loader": "", "loader_version": ""}
 
-    download_url = file_info.get("downloadUrl")
+    detailed = file_info
+    if not detailed.get("downloadUrl") and detailed.get("id"):
+        try:
+            detailed = get_file(mod_id, detailed["id"]) or file_info
+        except Exception as e:
+            print(f"[WARN] Could not fetch detailed file info for {mod_id}: {e}")
+
+    download_url = detailed.get("downloadUrl")
     if not download_url:
-        return None
+        return {"mod_count": None, "loader": "", "loader_version": ""}
 
     try:
         req = Request(
@@ -186,18 +196,47 @@ def modpack_mod_count(file_info):
             names = set(zf.namelist())
             manifest_name = "manifest.json"
             if manifest_name not in names:
-                # Some archives may wrap files in a top-level folder.
                 matches = [n for n in names if n.endswith("/manifest.json")]
                 if not matches:
-                    return None
+                    return {"mod_count": None, "loader": "", "loader_version": ""}
                 manifest_name = matches[0]
 
             manifest = json.loads(zf.read(manifest_name).decode("utf-8"))
             files = manifest.get("files") or []
-            return len(files)
+
+            minecraft = manifest.get("minecraft") or {}
+            mod_loaders = minecraft.get("modLoaders") or []
+            loader_name = ""
+            loader_version = ""
+
+            for item in mod_loaders:
+                raw = str(item.get("id") or "")
+                lower = raw.lower()
+                if lower.startswith("neoforge-"):
+                    loader_name = "NeoForge"
+                    loader_version = raw.split("-", 1)[1]
+                    break
+                if lower.startswith("forge-"):
+                    loader_name = "Forge"
+                    loader_version = raw.split("-", 1)[1]
+                    break
+                if lower.startswith("fabric-"):
+                    loader_name = "Fabric"
+                    loader_version = raw.split("-", 1)[1]
+                    break
+                if lower.startswith("quilt-"):
+                    loader_name = "Quilt"
+                    loader_version = raw.split("-", 1)[1]
+                    break
+
+            return {
+                "mod_count": len(files),
+                "loader": loader_name,
+                "loader_version": loader_version
+            }
     except Exception as e:
-        print(f"[WARN] Could not count modpack contents: {e}")
-        return None
+        print(f"[WARN] Could not inspect modpack manifest for {mod_id}: {e}")
+        return {"mod_count": None, "loader": "", "loader_version": ""}
 
 def build_embeds(projects, state, now):
     projects_sorted = sorted(projects, key=lambda m: (m.get("name") or "").lower())
@@ -233,15 +272,25 @@ def build_embeds(projects, state, now):
             info_parts = []
             if mc_versions:
                 info_parts.append("Minecraft " + ", ".join(mc_versions))
-            if loader:
-                info_parts.append(loader)
-            if configured_modloader_version:
-                info_parts.append("Modloader Version " + configured_modloader_version)
-
             if kind == "MODPACK":
-                count = modpack_mod_count(latest)
+                pack_info = modpack_manifest_info(mid, latest)
+                if pack_info.get("loader"):
+                    loader = pack_info["loader"]
+                if loader:
+                    info_parts.append(loader)
+
+                pack_loader_version = pack_info.get("loader_version") or configured_modloader_version
+                if pack_loader_version:
+                    info_parts.append("Modloader Version " + pack_loader_version)
+
+                count = pack_info.get("mod_count")
                 if count is not None:
                     info_parts.append(f"{count} Mods")
+            else:
+                if loader:
+                    info_parts.append(loader)
+                if configured_modloader_version:
+                    info_parts.append("Modloader Version " + configured_modloader_version)
 
             info_line = " • ".join(info_parts) if info_parts else "Release information unavailable"
         else:
