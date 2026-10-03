@@ -323,7 +323,7 @@ def build_embeds(projects, state, now):
         entry = (
             f"{prefix}**[{name}]({url})**\n"
             f"*{info_line}*\n"
-            f"⬇️ **{fmt_downloads(downloads)}** downloads"
+            f"**{fmt_downloads(downloads)}** downloads"
         )
 
         if kind == "MODPACK":
