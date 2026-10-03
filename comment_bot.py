@@ -401,9 +401,16 @@ async def on_ready():
     try:
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
+
+            # Copy the locally defined commands to this server and sync them immediately.
             bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             print(f"[OK] Synced {len(synced)} slash commands to guild {GUILD_ID}")
+
+            # Remove older globally registered copies so Discord does not show duplicates.
+            bot.tree.clear_commands(guild=None)
+            cleared = await bot.tree.sync()
+            print(f"[OK] Cleared global slash commands ({len(cleared)} remaining)")
         else:
             synced = await bot.tree.sync()
             print(f"[OK] Synced {len(synced)} global slash commands")
