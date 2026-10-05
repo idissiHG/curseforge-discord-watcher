@@ -1188,7 +1188,7 @@ async def slash_comments_import_existing(interaction: discord.Interaction):
 
 MANUAL_RELEASE_TYPES = {1: "Release", 2: "Beta", 3: "Alpha"}
 
-def build_manual_project_update_embed(project, info):
+def build_manual_project_update_embed(project, update_type, info):
     mod = cf_api_get(f"/mods/{int(project['id'])}").get("data") or {}
     latest = cf_latest_file(mod)
 
@@ -1218,7 +1218,8 @@ def build_manual_project_update_embed(project, info):
     else:
         description_parts.append("**Project Update**")
 
-    description_parts.append(f"**What's new**\n{info.strip()}")
+    section_title = "What's new" if update_type == "whats_new" else "📢 Announcement"
+    description_parts.append(f"**{section_title}**\n{info.strip()}")
     fields.append({"name": "Download", "value": f"[Open on CurseForge]({project_url})", "inline": False})
 
     embed = discord.Embed(
@@ -1242,15 +1243,23 @@ def build_manual_project_update_embed(project, info):
 @app_commands.guilds(GUILD_OBJ)
 @app_commands.describe(
     project="Project to post an update for",
-    info="Update information shown under What's new"
+    update_type="Choose the update section type",
+    info="Text shown in the selected section"
 )
-@app_commands.choices(project=[
-    app_commands.Choice(name=p["name"], value=str(p["id"]))
-    for p in KNOWN_PROJECTS
-])
+@app_commands.choices(
+    project=[
+        app_commands.Choice(name=p["name"], value=str(p["id"]))
+        for p in KNOWN_PROJECTS
+    ],
+    update_type=[
+        app_commands.Choice(name="What's new", value="whats_new"),
+        app_commands.Choice(name="Announcement", value="announcement")
+    ]
+)
 async def slash_project_update(
     interaction: discord.Interaction,
     project: app_commands.Choice[str],
+    update_type: app_commands.Choice[str],
     info: str
 ):
     if not interaction_allowed(interaction):
@@ -1266,7 +1275,7 @@ async def slash_project_update(
         return await interaction.followup.send("❌ Project not found.", ephemeral=True)
 
     try:
-        embed = await asyncio.to_thread(build_manual_project_update_embed, selected, info)
+        embed = await asyncio.to_thread(build_manual_project_update_embed, selected, update_type.value, info)
         await interaction.channel.send(embed=embed)
         await interaction.followup.send(
             f"✅ Manual update posted for **{selected['name']}**.",
