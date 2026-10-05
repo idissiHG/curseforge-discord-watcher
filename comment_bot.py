@@ -1218,7 +1218,7 @@ def build_manual_project_update_embed(project, update_type, info):
     else:
         description_parts.append("**Project Update**")
 
-    section_title = "What's new" if update_type == "whats_new" else "📢 Announcement"
+    section_title = "What's new" if update_type == "whats_new" else "Announcement"
     description_parts.append(f"**{section_title}**\n{info.strip()}")
     fields.append({"name": "Download", "value": f"[Open on CurseForge]({project_url})", "inline": False})
 
