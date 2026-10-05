@@ -1070,9 +1070,14 @@ async def on_ready():
             message = await channel.fetch_message(int(row_value(row, "discord_message_id")))
             await message.edit(embed=make_embed(row), view=view)
         except discord.NotFound:
-            pass
+            stale_id = row_value(row, "id", "")
+            stale_message_id = row_value(row, "discord_message_id", "")
+            db.execute("DELETE FROM comments WHERE id=?", (stale_id,))
+            db.commit()
+            print(f"[CLEANUP] Removed stale comment entry {stale_id} (missing Discord message {stale_message_id}).")
+            continue
         except Exception as exc:
-            print(f"[WARN] Could not refresh Discord message {row['discord_message_id']}: {exc}")
+            print(f"[WARN] Could not refresh Discord message {row_value(row, 'discord_message_id', '')}: {exc}")
 
         if row_value(row, "status", "new") == "done_pending":
             asyncio.create_task(done_countdown(row_value(row, "id", "unknown"), row_value(row, "discord_message_id")))
