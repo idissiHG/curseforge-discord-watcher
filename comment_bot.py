@@ -1180,6 +1180,99 @@ async def slash_comments_import_existing(interaction: discord.Interaction):
             ephemeral=True
         )
 
+
+MANUAL_RELEASE_TYPES = {1: "Release", 2: "Beta", 3: "Alpha"}
+
+def build_manual_project_update_embed(project, info):
+    mod = cf_api_get(f"/mods/{int(project['id'])}").get("data") or {}
+    latest = cf_latest_file(mod)
+
+    project_name = project.get("name") or mod.get("name") or f"Project {project['id']}"
+    project_url = ((mod.get("links") or {}).get("websiteUrl") or project.get("url") or "https://www.curseforge.com/")
+    logo = mod.get("logo") or {}
+    logo_url = logo.get("thumbnailUrl") or logo.get("url")
+
+    description_parts = []
+    fields = []
+
+    if latest:
+        display_name = latest.get("displayName") or latest.get("fileName") or "Latest release"
+        description_parts.append(f"**{display_name}**")
+
+        versions = latest.get("gameVersions") or []
+        mc_versions = cf_file_mc_versions(latest)
+        loader = cf_file_loader(latest)
+
+        if mc_versions:
+            fields.append({"name": "Minecraft", "value": ", ".join(mc_versions), "inline": True})
+        if loader:
+            fields.append({"name": "Loader", "value": loader, "inline": True})
+
+        release_type = MANUAL_RELEASE_TYPES.get(latest.get("releaseType"), "Unknown")
+        fields.append({"name": "Type", "value": release_type, "inline": True})
+    else:
+        description_parts.append("**Project Update**")
+
+    description_parts.append(f"**What's new**\n{info.strip()}")
+    fields.append({"name": "Download", "value": f"[Open on CurseForge]({project_url})", "inline": False})
+
+    embed = discord.Embed(
+        title=f"{project_icon(project.get('type') or 'PROJECT')} {project_name} updated",
+        url=project_url,
+        description="\n\n".join(description_parts),
+        color=0xF16436,
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    for field in fields:
+        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
+
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
+
+    embed.set_footer(text="CurseForge Update Watcher • Manual update")
+    return embed
+
+@bot.tree.command(name="project_update", description="Post a manual CurseForge project update")
+@app_commands.guilds(GUILD_OBJ)
+@app_commands.describe(
+    project="Project to post an update for",
+    info="Update information shown under What's new"
+)
+@app_commands.choices(project=[
+    app_commands.Choice(name=p["name"], value=str(p["id"]))
+    for p in KNOWN_PROJECTS
+])
+async def slash_project_update(
+    interaction: discord.Interaction,
+    project: app_commands.Choice[str],
+    info: str
+):
+    if not interaction_allowed(interaction):
+        return await interaction.response.send_message(
+            "You don't have permission to manage CurseForge project updates.",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    selected = next((p for p in KNOWN_PROJECTS if str(p["id"]) == project.value), None)
+    if not selected:
+        return await interaction.followup.send("❌ Project not found.", ephemeral=True)
+
+    try:
+        embed = await asyncio.to_thread(build_manual_project_update_embed, selected, info)
+        await interaction.channel.send(embed=embed)
+        await interaction.followup.send(
+            f"✅ Manual update posted for **{selected['name']}**.",
+            ephemeral=True
+        )
+    except Exception as exc:
+        await interaction.followup.send(
+            f"❌ Could not post project update: {exc}",
+            ephemeral=True
+        )
+
 @bot.tree.command(name="comments_check", description="Check CurseForge comments now")
 @app_commands.guilds(GUILD_OBJ)
 async def slash_comments_check(interaction: discord.Interaction):
