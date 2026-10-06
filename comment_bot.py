@@ -905,6 +905,7 @@ async def post_new_project(project, manual=False):
 
 async def check_new_projects_once():
     projects = await asyncio.to_thread(discover_comment_projects)
+    set_meta("discovered_projects_cache", json.dumps(projects, ensure_ascii=False))
     current_ids = {str(int(p["id"])) for p in projects}
 
     try:
@@ -1358,17 +1359,28 @@ def build_manual_project_update_embed(project, update_type, info):
     return embed
 
 async def project_autocomplete(interaction: discord.Interaction, current: str):
+    projects_by_id = {str(p["id"]): dict(p) for p in KNOWN_PROJECTS}
+
     try:
-        projects = await asyncio.to_thread(discover_comment_projects)
+        cached = json.loads(get_meta("discovered_projects_cache") or "[]")
+        if isinstance(cached, list):
+            for p in cached:
+                if isinstance(p, dict) and p.get("id") is not None:
+                    projects_by_id[str(p["id"])] = p
     except Exception:
-        projects = KNOWN_PROJECTS
+        pass
+
     current_lower = (current or "").lower()
     matches = [
-        p for p in projects
+        p for p in projects_by_id.values()
         if current_lower in str(p.get("name", "")).lower()
     ][:25]
+
     return [
-        app_commands.Choice(name=str(p.get("name") or p["id"])[:100], value=str(p["id"]))
+        app_commands.Choice(
+            name=str(p.get("name") or p["id"])[:100],
+            value=str(p["id"])
+        )
         for p in matches
     ]
 
