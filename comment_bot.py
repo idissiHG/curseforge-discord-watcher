@@ -30,6 +30,7 @@ CF_API_KEY = os.environ.get("CURSEFORGE_API_KEY", "").strip()
 COMMENT_POLL_SECONDS = int(os.environ.get("COMMENT_POLL_SECONDS", "60") or 60)
 PROJECTS_CHANNEL_ID = int(os.environ.get("DISCORD_PROJECTS_CHANNEL_ID", "1555906276888809553") or 0)
 PROJECTS_REFRESH_SECONDS = int(os.environ.get("PROJECTS_REFRESH_SECONDS", "900") or 900)
+PROJECT_UPDATES_CHANNEL_ID = int(os.environ.get("DISCORD_PROJECT_UPDATES_CHANNEL_ID", "1556063817568358562") or 0)
 IGNORE_CF_AUTHORS = {
     x.strip().lower()
     for x in os.environ.get("COMMENT_IGNORE_AUTHOR_NAMES", "IDiSSi").split(",")
@@ -735,6 +736,23 @@ def cf_latest_file(mod):
         return None
     return max(files, key=lambda f: (f.get("fileDate", ""), int(f.get("id", 0))))
 
+
+def cf_available_files(project_id):
+    data = cf_api_get(f"/mods/{int(project_id)}/files", {"pageSize": 50}).get("data") or []
+    return [f for f in data if f.get("isAvailable", True)]
+
+def cf_first_approved_file(project_id):
+    files = cf_available_files(project_id)
+    if not files:
+        return None
+    return min(files, key=lambda f: (f.get("fileDate", ""), int(f.get("id", 0))))
+
+def cf_current_file(project_id):
+    files = cf_available_files(project_id)
+    if not files:
+        return None
+    return max(files, key=lambda f: (f.get("fileDate", ""), int(f.get("id", 0))))
+
 def cf_file_loader(file_info):
     if not file_info:
         return ""
@@ -830,6 +848,102 @@ def cf_fmt_downloads(value):
         return f"{int(value):,}".replace(",", ".")
     except Exception:
         return "0"
+
+def build_new_project_embed(project, manual=False):
+    mod = cf_api_get(f"/mods/{int(project['id'])}").get("data") or {}
+    file_info = cf_current_file(project["id"])
+    if not mod or not file_info:
+        raise RuntimeError("Project or approved file is not available yet.")
+
+    kind = project_kind_from_url(((mod.get("links") or {}).get("websiteUrl") or project.get("url") or ""))
+    kind_label = {"MOD": "MOD", "MODPACK": "MODPACK", "PROJECT": "PROJECT"}.get(kind, "PROJECT")
+    project_name = mod.get("name") or project.get("name") or f"Project {project['id']}"
+    project_url = ((mod.get("links") or {}).get("websiteUrl") or project.get("url") or "https://www.curseforge.com/")
+    summary = (mod.get("summary") or "No project description available.").strip()
+
+    display_name = file_info.get("displayName") or file_info.get("fileName") or "First release"
+    mc_versions = cf_file_mc_versions(file_info)
+    loader = cf_file_loader(file_info)
+    release_type = MANUAL_RELEASE_TYPES.get(file_info.get("releaseType"), "Unknown")
+
+    embed = discord.Embed(
+        title=f"NEW {kind_label}",
+        url=project_url,
+        description=(
+            f"{project_icon(kind)} [**{project_name}**]({project_url})\n\n"
+            f"**{display_name}**\n\n"
+            f"**Key Facts**\n{summary}"
+        ),
+        color=0xF16436,
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    if mc_versions:
+        embed.add_field(name="Minecraft", value=", ".join(mc_versions), inline=True)
+    if loader:
+        embed.add_field(name="Loader", value=loader, inline=True)
+    embed.add_field(name="Type", value=release_type, inline=True)
+    embed.add_field(name="Download", value=f"[Open on CurseForge]({project_url})", inline=False)
+
+    logo = mod.get("logo") or {}
+    logo_url = logo.get("thumbnailUrl") or logo.get("url")
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
+
+    footer = "CurseForge Update Watcher"
+    if manual:
+        footer += " • Manual NEW project"
+    embed.set_footer(text=footer)
+    return embed
+
+async def post_new_project(project, manual=False):
+    if not PROJECT_UPDATES_CHANNEL_ID:
+        raise RuntimeError("DISCORD_PROJECT_UPDATES_CHANNEL_ID is not configured.")
+    embed = await asyncio.to_thread(build_new_project_embed, project, manual)
+    channel = bot.get_channel(PROJECT_UPDATES_CHANNEL_ID) or await bot.fetch_channel(PROJECT_UPDATES_CHANNEL_ID)
+    return await channel.send(embed=embed)
+
+async def check_new_projects_once():
+    projects = await asyncio.to_thread(discover_comment_projects)
+    current_ids = {str(int(p["id"])) for p in projects}
+
+    try:
+        known_state = json.loads(get_meta("new_project_state") or "{}")
+        if not isinstance(known_state, dict):
+            known_state = {}
+    except Exception:
+        known_state = {}
+
+    # Existing hard-coded projects are the baseline and must never spam NEW messages
+    # when this feature is first enabled.
+    for p in KNOWN_PROJECTS:
+        pid = str(int(p["id"]))
+        known_state.setdefault(pid, {"announced": True, "waiting_for_file": False})
+
+    for project in projects:
+        pid = str(int(project["id"]))
+        state = known_state.get(pid)
+
+        if state is None:
+            first_file = await asyncio.to_thread(cf_first_approved_file, project["id"])
+            if first_file:
+                await post_new_project(project, manual=False)
+                known_state[pid] = {"announced": True, "waiting_for_file": False}
+                print(f"[NEW PROJECT] Posted {project['name']} ({pid}).")
+            else:
+                known_state[pid] = {"announced": False, "waiting_for_file": True}
+                print(f"[NEW PROJECT] Tracking {project['name']} ({pid}) until first approved file.")
+            continue
+
+        if not state.get("announced", False):
+            first_file = await asyncio.to_thread(cf_first_approved_file, project["id"])
+            if first_file:
+                await post_new_project(project, manual=False)
+                state["announced"] = True
+                state["waiting_for_file"] = False
+                print(f"[NEW PROJECT] First approved file found for {project['name']} ({pid}).")
+
+    set_meta("new_project_state", json.dumps(known_state))
 
 def fetch_project_overview_data():
     projects = discover_comment_projects()
@@ -1007,6 +1121,10 @@ async def project_overview_poller():
         await update_project_overview_once()
     except Exception as exc:
         print(f"[WARN] Project overview refresh failed: {exc}")
+    try:
+        await check_new_projects_once()
+    except Exception as exc:
+        print(f"[WARN] New project check failed: {exc}")
 
 @project_overview_poller.before_loop
 async def before_project_overview_poller():
@@ -1238,6 +1356,51 @@ def build_manual_project_update_embed(project, update_type, info):
 
     embed.set_footer(text="CurseForge Update Watcher • Manual update")
     return embed
+
+async def project_autocomplete(interaction: discord.Interaction, current: str):
+    try:
+        projects = await asyncio.to_thread(discover_comment_projects)
+    except Exception:
+        projects = KNOWN_PROJECTS
+    current_lower = (current or "").lower()
+    matches = [
+        p for p in projects
+        if current_lower in str(p.get("name", "")).lower()
+    ][:25]
+    return [
+        app_commands.Choice(name=str(p.get("name") or p["id"])[:100], value=str(p["id"]))
+        for p in matches
+    ]
+
+@bot.tree.command(name="project_new", description="Post a NEW project announcement manually")
+@app_commands.guilds(GUILD_OBJ)
+@app_commands.describe(project="Project to announce as NEW")
+@app_commands.autocomplete(project=project_autocomplete)
+async def slash_project_new(interaction: discord.Interaction, project: str):
+    if not interaction_allowed(interaction):
+        return await interaction.response.send_message(
+            "You don't have permission to manage CurseForge project updates.",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    projects = await asyncio.to_thread(discover_comment_projects)
+    selected = next((p for p in projects if str(p["id"]) == str(project)), None)
+    if not selected:
+        return await interaction.followup.send("❌ Project not found.", ephemeral=True)
+
+    try:
+        await post_new_project(selected, manual=True)
+        await interaction.followup.send(
+            f"✅ NEW project post sent for **{selected['name']}**.",
+            ephemeral=True
+        )
+    except Exception as exc:
+        await interaction.followup.send(
+            f"❌ Could not post NEW project: {exc}",
+            ephemeral=True
+        )
 
 @bot.tree.command(name="project_update", description="Post a manual CurseForge project update")
 @app_commands.guilds(GUILD_OBJ)
